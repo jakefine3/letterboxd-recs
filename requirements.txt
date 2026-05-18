@@ -1,0 +1,28 @@
+# data processing
+pandas
+numpy
+
+# ml / recommendation algs
+scikit-learn
+scipy
+scikit-surprise
+
+# API and web scraping
+requests
+beautifulsoup4
+lxml
+
+# Configuration management
+python-dotenv
+
+# web framework (for future app)
+fastapi
+uvicorn
+
+# analysis / validation
+jupyter
+matplotlib
+seaborn
+
+# tests
+pytest
