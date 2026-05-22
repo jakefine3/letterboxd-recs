@@ -1,6 +1,7 @@
 import json
-import time
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
@@ -10,7 +11,7 @@ logger = logging.getLogger(__name__)
 _BASE_URL = "https://api.themoviedb.org/3"
 _DEFAULT_CACHE = Path("data/processed/tmdb_cache.json")
 _TOP_CAST = 5
-_REQUEST_DELAY = 0.1  # seconds between API calls
+_MAX_WORKERS = 10  # safe against TMDB's 40 req/sec limit
 
 
 class TMDBClient:
@@ -18,6 +19,7 @@ class TMDBClient:
         self._api_key = api_key
         self._cache_path = Path(cache_path)
         self._cache = self._load_cache()
+        self._lock = threading.Lock()  # protects cache writes across threads
 
     # ------------------------------------------------------------------
     # Cache helpers
@@ -27,7 +29,7 @@ class TMDBClient:
         if self._cache_path.exists():
             with open(self._cache_path) as f:
                 return json.load(f)
-        return {"search": {}, "details": {}, "credits": {}, "keywords": {}}
+        return {"search": {}, "combined": {}}
 
     def _save_cache(self) -> None:
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -44,7 +46,6 @@ class TMDBClient:
         try:
             resp = requests.get(url, params=p, timeout=10)
             resp.raise_for_status()
-            time.sleep(_REQUEST_DELAY)
             return resp.json()
         except requests.RequestException as e:
             logger.warning("TMDB request failed (%s %s): %s", endpoint, params, e)
@@ -52,51 +53,41 @@ class TMDBClient:
 
     def _search_id(self, name: str, year: int) -> int | None:
         key = f"{name}_{year}"
-        if key in self._cache["search"]:
-            return self._cache["search"][key]
+
+        with self._lock:
+            if key in self._cache["search"]:
+                return self._cache["search"][key]
 
         data = self._get("search/movie", {"query": name, "year": year})
         if not data or not data.get("results"):
-            # retry without year constraint — handles year mismatches between
-            # Letterboxd and TMDB (e.g. festival year vs release year)
+            # retry without year — handles festival vs wide release year mismatches
             data = self._get("search/movie", {"query": name})
 
-        tmdb_id = None
-        if data and data.get("results"):
-            tmdb_id = data["results"][0]["id"]
+        tmdb_id = data["results"][0]["id"] if data and data.get("results") else None
 
-        self._cache["search"][key] = tmdb_id
-        self._save_cache()
+        with self._lock:
+            self._cache["search"][key] = tmdb_id
+            self._save_cache()
+
         return tmdb_id
 
-    def _fetch_details(self, tmdb_id: int) -> dict | None:
+    def _fetch_combined(self, tmdb_id: int) -> dict | None:
+        """Single request for details + credits + keywords via append_to_response."""
         sid = str(tmdb_id)
-        if sid in self._cache["details"]:
-            return self._cache["details"][sid]
 
-        data = self._get(f"movie/{tmdb_id}")
-        self._cache["details"][sid] = data
-        self._save_cache()
-        return data
+        with self._lock:
+            if sid in self._cache["combined"]:
+                return self._cache["combined"][sid]
 
-    def _fetch_credits(self, tmdb_id: int) -> dict | None:
-        sid = str(tmdb_id)
-        if sid in self._cache["credits"]:
-            return self._cache["credits"][sid]
+        data = self._get(
+            f"movie/{tmdb_id}",
+            {"append_to_response": "credits,keywords"},
+        )
 
-        data = self._get(f"movie/{tmdb_id}/credits")
-        self._cache["credits"][sid] = data
-        self._save_cache()
-        return data
+        with self._lock:
+            self._cache["combined"][sid] = data
+            self._save_cache()
 
-    def _fetch_keywords(self, tmdb_id: int) -> dict | None:
-        sid = str(tmdb_id)
-        if sid in self._cache["keywords"]:
-            return self._cache["keywords"][sid]
-
-        data = self._get(f"movie/{tmdb_id}/keywords")
-        self._cache["keywords"][sid] = data
-        self._save_cache()
         return data
 
     # ------------------------------------------------------------------
@@ -104,11 +95,7 @@ class TMDBClient:
     # ------------------------------------------------------------------
 
     def enrich_film(self, name: str, year: int) -> dict:
-        """Return a flat dict of TMDB metadata for a single film.
-
-        Returns an empty dict (with only tmdb_id=None) if the film can't be
-        found, so callers can still build a row for it.
-        """
+        """Return a flat dict of TMDB metadata for a single film."""
         base = {
             "tmdb_id": None,
             "genres": [],
@@ -118,7 +105,6 @@ class TMDBClient:
             "runtime": None,
             "language": None,
             "country": None,
-            "overview": None,
         }
 
         tmdb_id = self._search_id(name, year)
@@ -128,55 +114,63 @@ class TMDBClient:
 
         base["tmdb_id"] = tmdb_id
 
-        details = self._fetch_details(tmdb_id)
-        if details:
-            base["genres"] = [g["name"] for g in details.get("genres", [])]
-            base["runtime"] = details.get("runtime")
-            base["language"] = details.get("original_language")
-            base["country"] = (details.get("production_countries") or [{}])[0].get("iso_3166_1")
-            base["overview"] = details.get("overview")
+        data = self._fetch_combined(tmdb_id)
+        if not data:
+            return base
 
-        credits = self._fetch_credits(tmdb_id)
-        if credits:
-            directors = [
-                p["name"] for p in credits.get("crew", []) if p.get("job") == "Director"
-            ]
-            base["director"] = directors[0] if directors else None
-            base["cast"] = [p["name"] for p in credits.get("cast", [])[:_TOP_CAST]]
+        base["genres"] = [g["name"] for g in data.get("genres", [])]
+        base["runtime"] = data.get("runtime")
+        base["language"] = data.get("original_language")
+        base["country"] = (data.get("production_countries") or [{}])[0].get("iso_3166_1")
 
-        keywords = self._fetch_keywords(tmdb_id)
-        if keywords:
-            base["keywords"] = [k["name"] for k in keywords.get("keywords", [])]
+        credits = data.get("credits", {})
+        directors = [p["name"] for p in credits.get("crew", []) if p.get("job") == "Director"]
+        base["director"] = directors[0] if directors else None
+        base["cast"] = [p["name"] for p in credits.get("cast", [])[:_TOP_CAST]]
+
+        base["keywords"] = [k["name"] for k in data.get("keywords", {}).get("keywords", [])]
 
         return base
 
     def enrich_dataframe(self, df, verbose: bool = True) -> "pd.DataFrame":
-        """Add TMDB columns to a ratings DataFrame in-place.
+        """Enrich a ratings DataFrame with TMDB metadata using parallel requests.
 
         Expects columns: name, year (as produced by csv_loader.load_ratings).
-        Skips rows that already have a tmdb_id populated so reruns are cheap.
+        Skips rows already in cache so reruns only fetch what's missing.
         """
         import pandas as pd
 
         tmdb_cols = ["tmdb_id", "genres", "director", "cast", "keywords",
-                     "runtime", "language", "country", "overview"]
+                     "runtime", "language", "country"]
         for col in tmdb_cols:
             if col not in df.columns:
                 df[col] = None
 
-        total = len(df)
-        for i, row in df.iterrows():
-            if pd.notna(df.at[i, "tmdb_id"]):
-                continue  # already enriched
+        # only fetch rows not yet enriched
+        todo = [(i, row) for i, row in df.iterrows() if pd.isna(df.at[i, "tmdb_id"])]
+        total = len(todo)
 
-            if verbose:
-                print(f"[{i + 1}/{total}] {row['name']} ({row['year']})", end="\r")
+        if total == 0:
+            print("All films already cached — nothing to fetch.")
+            return df
 
-            enriched = self.enrich_film(str(row["name"]), int(row["year"]))
-            for col in tmdb_cols:
-                df.at[i, col] = enriched[col]
+        print(f"Fetching {total} films from TMDB ({_MAX_WORKERS} workers)...")
+        completed = 0
 
-        if verbose:
-            print()  # newline after progress output
+        def fetch(i, row):
+            return i, self.enrich_film(str(row["name"]), int(row["year"]))
 
+        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+            futures = {executor.submit(fetch, i, row): i for i, row in todo}
+            for future in as_completed(futures):
+                i, enriched = future.result()
+                for col in tmdb_cols:
+                    df.at[i, col] = enriched[col]
+
+                if verbose:
+                    nonlocal_completed = futures  # just used as a counter proxy
+                    completed += 1
+                    print(f"  {completed}/{total}", end="\r")
+
+        print(f"\nDone. {df['tmdb_id'].isna().sum()} film(s) not matched in TMDB.")
         return df
