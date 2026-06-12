@@ -28,8 +28,22 @@ class TMDBClient:
     def _load_cache(self) -> dict:
         if self._cache_path.exists():
             with open(self._cache_path) as f:
-                return json.load(f)
+                data = json.load(f)
+            # migrate old cache format that stored details/credits/keywords separately
+            if "combined" not in data and "details" in data:
+                data = self._migrate_cache(data)
+            return data
         return {"search": {}, "combined": {}}
+
+    @staticmethod
+    def _migrate_cache(old: dict) -> dict:
+        new: dict = {"search": old.get("search", {}), "combined": {}}
+        for sid, details in old.get("details", {}).items():
+            combined = dict(details)
+            combined["credits"] = old.get("credits", {}).get(sid, {"cast": [], "crew": []})
+            combined["keywords"] = old.get("keywords", {}).get(sid, {"keywords": []})
+            new["combined"][sid] = combined
+        return new
 
     def _save_cache(self) -> None:
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -105,6 +119,7 @@ class TMDBClient:
             "runtime": None,
             "language": None,
             "country": None,
+            "overview": "",
         }
 
         tmdb_id = self._search_id(name, year)
@@ -122,6 +137,7 @@ class TMDBClient:
         base["runtime"] = data.get("runtime")
         base["language"] = data.get("original_language")
         base["country"] = (data.get("production_countries") or [{}])[0].get("iso_3166_1")
+        base["overview"] = data.get("overview", "") or ""
 
         credits = data.get("credits", {})
         directors = [p["name"] for p in credits.get("crew", []) if p.get("job") == "Director"]
@@ -132,6 +148,73 @@ class TMDBClient:
 
         return base
 
+    def fetch_candidates(
+        self,
+        seen_ids: set,
+        n_popular_pages: int = 5,
+        top_films: list | None = None,
+    ) -> "pd.DataFrame":
+        """Fetch unseen candidate films from TMDB: popular + trending + similar-to-favorites.
+
+        Returns a DataFrame with the same columns as enrich_dataframe output,
+        minus the rating field (candidates are unrated).
+        """
+        import pandas as pd
+
+        candidate_ids: set = set()
+
+        for page in range(1, n_popular_pages + 1):
+            data = self._get("movie/popular", {"page": page})
+            if data:
+                candidate_ids.update(m["id"] for m in data.get("results", []))
+
+        data = self._get("trending/movie/week")
+        if data:
+            candidate_ids.update(m["id"] for m in data.get("results", []))
+
+        for film_id in (top_films or [])[:10]:
+            data = self._get(f"movie/{film_id}/similar")
+            if data:
+                candidate_ids.update(m["id"] for m in data.get("results", []))
+
+        candidate_ids -= set(seen_ids)
+        candidate_ids.discard(None)
+
+        print(f"  Fetching details for {len(candidate_ids)} candidates...")
+
+        rows = []
+        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+            futures = {executor.submit(self._fetch_combined, tid): tid for tid in candidate_ids}
+            for future in as_completed(futures):
+                tid = futures[future]
+                data = future.result()
+                if not data:
+                    continue
+                name = data.get("title") or data.get("original_title")
+                release = (data.get("release_date") or "")[:4]
+                year = int(release) if release.isdigit() else None
+                if not name or not year:
+                    continue
+
+                credits = data.get("credits", {})
+                directors = [p["name"] for p in credits.get("crew", []) if p.get("job") == "Director"]
+
+                rows.append({
+                    "name": name,
+                    "year": year,
+                    "tmdb_id": tid,
+                    "genres": [g["name"] for g in data.get("genres", [])],
+                    "director": directors[0] if directors else None,
+                    "cast": [p["name"] for p in credits.get("cast", [])[:_TOP_CAST]],
+                    "keywords": [k["name"] for k in data.get("keywords", {}).get("keywords", [])],
+                    "runtime": data.get("runtime"),
+                    "language": data.get("original_language"),
+                    "country": (data.get("production_countries") or [{}])[0].get("iso_3166_1"),
+                    "overview": data.get("overview", "") or "",
+                })
+
+        return pd.DataFrame(rows)
+
     def enrich_dataframe(self, df, verbose: bool = True) -> "pd.DataFrame":
         """Enrich a ratings DataFrame with TMDB metadata using parallel requests.
 
@@ -141,7 +224,7 @@ class TMDBClient:
         import pandas as pd
 
         tmdb_cols = ["tmdb_id", "genres", "director", "cast", "keywords",
-                     "runtime", "language", "country"]
+                     "runtime", "language", "country", "overview"]
         for col in tmdb_cols:
             if col not in df.columns:
                 df[col] = None

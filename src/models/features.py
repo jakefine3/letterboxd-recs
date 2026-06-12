@@ -2,6 +2,7 @@
 import ast
 import pandas as pd
 import numpy as np
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import MinMaxScaler
 
 
@@ -31,7 +32,7 @@ def _parse_list_col(series: pd.Series) -> pd.Series:
     return series.apply(parse)
 
 
-class FeatureBuilder:
+class FeatureBuilder(BaseEstimator, TransformerMixin):
     """Fits on a rated-film DataFrame and transforms it into a numeric matrix.
 
     Fit once on your rated library, then use transform() on any set of films
@@ -62,7 +63,7 @@ class FeatureBuilder:
     # Fit
     # ------------------------------------------------------------------
 
-    def fit(self, df: pd.DataFrame) -> "FeatureBuilder":
+    def fit(self, df: pd.DataFrame, y=None) -> "FeatureBuilder":
         genres = _parse_list_col(df["genres"])
         cast = _parse_list_col(df["cast"])
         keywords = _parse_list_col(df["keywords"])
@@ -98,7 +99,7 @@ class FeatureBuilder:
     # Transform
     # ------------------------------------------------------------------
 
-    def transform(self, df: pd.DataFrame) -> np.ndarray:
+    def transform(self, df: pd.DataFrame, y=None) -> np.ndarray:
         genres = _parse_list_col(df["genres"])
         cast = _parse_list_col(df["cast"])
         keywords = _parse_list_col(df["keywords"])
@@ -125,9 +126,6 @@ class FeatureBuilder:
             rows.append(genre_vec + director_vec + cast_vec + keyword_vec + [runtime_norm, is_english])
 
         return np.array(rows, dtype=np.float32)
-
-    def fit_transform(self, df: pd.DataFrame) -> np.ndarray:
-        return self.fit(df).transform(df)
 
     def get_target(self, df: pd.DataFrame) -> np.ndarray:
         """Return the rating column as a numpy array (your y vector)."""
