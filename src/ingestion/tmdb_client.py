@@ -81,7 +81,6 @@ class TMDBClient:
 
         with self._lock:
             self._cache["search"][key] = tmdb_id
-            self._save_cache()
 
         return tmdb_id
 
@@ -100,7 +99,6 @@ class TMDBClient:
 
         with self._lock:
             self._cache["combined"][sid] = data
-            self._save_cache()
 
         return data
 
@@ -120,6 +118,8 @@ class TMDBClient:
             "language": None,
             "country": None,
             "overview": "",
+            "vote_average": None,
+            "vote_count": 0,
         }
 
         tmdb_id = self._search_id(name, year)
@@ -145,6 +145,8 @@ class TMDBClient:
         base["cast"] = [p["name"] for p in credits.get("cast", [])[:_TOP_CAST]]
 
         base["keywords"] = [k["name"] for k in data.get("keywords", {}).get("keywords", [])]
+        base["vote_average"] = data.get("vote_average")
+        base["vote_count"] = data.get("vote_count", 0)
 
         return base
 
@@ -211,8 +213,75 @@ class TMDBClient:
                     "language": data.get("original_language"),
                     "country": (data.get("production_countries") or [{}])[0].get("iso_3166_1"),
                     "overview": data.get("overview", "") or "",
+                    "vote_average": data.get("vote_average"),
+                    "vote_count": data.get("vote_count", 0),
                 })
 
+        self._save_cache()
+        return pd.DataFrame(rows)
+
+    def fetch_film_db(self, n_pages: int = 200) -> "pd.DataFrame":
+        """Build a large film corpus for offline use (popular + top-rated pages).
+
+        Run once via scripts/build_film_db.py. The result is saved as a parquet
+        file that the web app loads at startup for instant, API-free inference.
+        """
+        import pandas as pd
+
+        film_ids: set = set()
+        for endpoint in ("movie/popular", "movie/top_rated"):
+            for page in range(1, n_pages + 1):
+                data = self._get(endpoint, {"page": page})
+                if data:
+                    film_ids.update(m["id"] for m in data.get("results", []))
+                if page % 50 == 0:
+                    print(f"  {endpoint}: {page}/{n_pages} pages")
+
+        for period in ("day", "week"):
+            data = self._get(f"trending/movie/{period}")
+            if data:
+                film_ids.update(m["id"] for m in data.get("results", []))
+
+        print(f"Found {len(film_ids)} unique IDs. Fetching details...")
+        _BUILD_WORKERS = 20
+        rows = []
+        done = 0
+
+        with ThreadPoolExecutor(max_workers=_BUILD_WORKERS) as executor:
+            futures = {executor.submit(self._fetch_combined, tid): tid for tid in film_ids}
+            for future in as_completed(futures):
+                done += 1
+                if done % 200 == 0:
+                    print(f"  {done}/{len(film_ids)}", end="\r")
+                data = future.result()
+                if not data:
+                    continue
+                name = data.get("title") or data.get("original_title")
+                release = (data.get("release_date") or "")[:4]
+                year = int(release) if release.isdigit() else None
+                if not name or not year:
+                    continue
+                credits = data.get("credits", {})
+                directors = [p["name"] for p in credits.get("crew", []) if p.get("job") == "Director"]
+                rows.append({
+                    "tmdb_id": futures[future],
+                    "name": name,
+                    "year": year,
+                    "name_key": f"{name.lower().strip()}_{year}",
+                    "genres": [g["name"] for g in data.get("genres", [])],
+                    "director": directors[0] if directors else None,
+                    "cast": [p["name"] for p in credits.get("cast", [])[:_TOP_CAST]],
+                    "keywords": [k["name"] for k in data.get("keywords", {}).get("keywords", [])],
+                    "runtime": data.get("runtime"),
+                    "language": data.get("original_language"),
+                    "country": (data.get("production_countries") or [{}])[0].get("iso_3166_1"),
+                    "overview": data.get("overview", "") or "",
+                    "vote_average": data.get("vote_average"),
+                    "vote_count": data.get("vote_count", 0),
+                })
+
+        self._save_cache()
+        print(f"\nBuilt DB: {len(rows)} films.")
         return pd.DataFrame(rows)
 
     def enrich_dataframe(self, df, verbose: bool = True) -> "pd.DataFrame":
@@ -224,7 +293,7 @@ class TMDBClient:
         import pandas as pd
 
         tmdb_cols = ["tmdb_id", "genres", "director", "cast", "keywords",
-                     "runtime", "language", "country", "overview"]
+                     "runtime", "language", "country", "overview", "vote_average", "vote_count"]
         for col in tmdb_cols:
             if col not in df.columns:
                 df[col] = None
@@ -255,5 +324,6 @@ class TMDBClient:
                     completed += 1
                     print(f"  {completed}/{total}", end="\r")
 
+        self._save_cache()
         print(f"\nDone. {df['tmdb_id'].isna().sum()} film(s) not matched in TMDB.")
         return df
