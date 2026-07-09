@@ -6,6 +6,7 @@ Input: a public Letterboxd username (scraped live). The CSV path still exists
 in the backend (src/ingestion/csv_loader.py) for offline experimentation.
 """
 import os
+import random
 
 import pandas as pd
 import streamlit as st
@@ -19,7 +20,35 @@ from src.models import taste
 load_dotenv()
 
 _POSTER_BASE = "https://image.tmdb.org/t/p/w342"
+_MARQUEE_POSTER_BASE = "https://image.tmdb.org/t/p/w185"
 _EMPTY_POSTER = "https://s.ltrbxd.com/static/img/empty-poster-70-BSf-Pjrh.png"
+
+_QUOTES = [
+    ("Frankly, my dear, I don't give a damn.", "Gone with the Wind", 1939),
+    ("Here's looking at you, kid.", "Casablanca", 1942),
+    ("I'm gonna make him an offer he can't refuse.", "The Godfather", 1972),
+    ("You talking to me?", "Taxi Driver", 1976),
+    ("May the Force be with you.", "Star Wars", 1977),
+    ("Here's Johnny!", "The Shining", 1980),
+    ("Say hello to my little friend!", "Scarface", 1983),
+    ("Roads? Where we're going, we don't need roads.", "Back to the Future", 1985),
+    ("I'll be back.", "The Terminator", 1984),
+    ("Nobody puts Baby in a corner.", "Dirty Dancing", 1987),
+    ("You can't handle the truth!", "A Few Good Men", 1992),
+    ("Life is like a box of chocolates.", "Forrest Gump", 1994),
+    ("Houston, we have a problem.", "Apollo 13", 1995),
+    ("I see dead people.", "The Sixth Sense", 1999),
+    ("I am serious. And don't call me Shirley.", "Airplane!", 1980),
+    ("Why so serious?", "The Dark Knight", 2008),
+    ("Keep your friends close, but your enemies closer.", "The Godfather Part II", 1974),
+    ("It's alive! It's alive!", "Frankenstein", 1931),
+    ("E.T. phone home.", "E.T. the Extra-Terrestrial", 1982),
+    ("They may take our lives, but they'll never take our freedom!", "Braveheart", 1995),
+    ("To infinity and beyond!", "Toy Story", 1995),
+    ("Just keep swimming.", "Finding Nemo", 2003),
+    ("Wax on, wax off.", "The Karate Kid", 1984),
+    ("I drink your milkshake!", "There Will Be Blood", 2007),
+]
 
 st.set_page_config(page_title="Letterboxd Recs", page_icon="🎬", layout="wide")
 
@@ -104,6 +133,61 @@ h1, h2, h3 { color: #fff !important; letter-spacing: -0.5px; }
     font-size: .85rem;
 }
 .lb-chip b { color: #40bcf4; }
+
+/* site title */
+.lb-title {
+    font-size: 2.4rem;
+    font-weight: 900;
+    letter-spacing: -1px;
+    color: #fff;
+    margin-bottom: 0;
+}
+.lb-title .accent { color: #00e054; }
+
+/* rotating quote */
+.lb-quote {
+    font-style: italic;
+    color: #9ab;
+    font-size: 1.15rem;
+    margin: 4px 0 18px 0;
+}
+.lb-quote .src { font-style: normal; color: #678; font-size: .85rem; }
+.lb-quote .src b { color: #40bcf4; }
+
+/* trending poster marquee */
+.lb-marquee {
+    overflow: hidden;
+    margin-top: 40px;
+    padding: 12px 0;
+    border-top: 1px solid #2c3440;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+}
+.lb-marquee .label {
+    color: #678;
+    font-size: .75rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 10px;
+}
+.lb-marquee-track {
+    display: flex;
+    gap: 12px;
+    width: max-content;
+    animation: lb-scroll 60s linear infinite;
+}
+.lb-marquee-track:hover { animation-play-state: paused; }
+.lb-marquee-track img {
+    height: 150px;
+    border-radius: 4px;
+    border: 1px solid #456;
+    transition: transform .15s ease;
+}
+.lb-marquee-track img:hover { transform: scale(1.06); }
+@keyframes lb-scroll {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
+}
 </style>
 """
 st.markdown(_LB_CSS, unsafe_allow_html=True)
@@ -184,17 +268,47 @@ def poster_grid(films: pd.DataFrame, n_cols: int = 5):
                 )
 
 
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def trending_posters() -> list[dict]:
+    return get_client().trending_posters()
+
+
+def render_trending_marquee():
+    films = trending_posters()
+    if not films:
+        return
+    imgs = "".join(
+        f'<img src="{_MARQUEE_POSTER_BASE}{f["poster_path"]}" alt="{f["name"]}" title="{f["name"]}">'
+        for f in films
+    )
+    st.markdown(
+        f"""
+        <div class="lb-marquee">
+            <div class="label">🔥 Trending this week</div>
+            <div class="lb-marquee-track">{imgs}{imgs}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ----------------------------------------------------------------------
 # Header + input
 # ----------------------------------------------------------------------
 
+# one quote per visit — survives widget interactions, changes on refresh
+if "quote" not in st.session_state:
+    st.session_state.quote = random.choice(_QUOTES)
+quote, film, year = st.session_state.quote
+
 st.markdown(
-    '<div class="lb-dots"><span class="lb-dot-orange">●</span>'
-    '<span class="lb-dot-green">●</span>'
-    '<span class="lb-dot-blue">●</span></div>',
+    f"""
+    <div class="lb-title">Letterboxd <span class="accent">Recs</span></div>
+    <div class="lb-dots"><span class="lb-dot-orange">●</span><span class="lb-dot-green">●</span><span class="lb-dot-blue">●</span></div>
+    <div class="lb-quote">“{quote}” <span class="src">— <b>{film}</b> ({year})</span></div>
+    """,
     unsafe_allow_html=True,
 )
-st.title("So many movies, so little time.")
 st.write("We'll learn your taste from your Letterboxd ratings and find films you'll love.")
 
 col_input, col_slider = st.columns([2, 1])
@@ -213,6 +327,7 @@ hide_mainstream = st.toggle(
 )
 
 if not username:
+    render_trending_marquee()
     st.stop()
 
 # ----------------------------------------------------------------------
@@ -330,3 +445,5 @@ with tab_taste:
         st.subheader("Your rating distribution")
         dist = enriched["rating"].value_counts().sort_index()
         st.bar_chart(dist, color="#40bcf4")
+
+render_trending_marquee()

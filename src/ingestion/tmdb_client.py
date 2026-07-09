@@ -152,6 +152,17 @@ class TMDBClient:
 
         return base
 
+    def trending_posters(self, n: int = 20) -> list[dict]:
+        """Poster paths + names for this week's trending films (for UI display)."""
+        data = self._get("trending/movie/week")
+        if not data:
+            return []
+        return [
+            {"name": m.get("title"), "poster_path": m.get("poster_path")}
+            for m in data.get("results", [])[:n]
+            if m.get("poster_path")
+        ]
+
     def _genre_name_to_id(self) -> dict:
         """Map TMDB genre names to IDs (needed for /discover filters)."""
         data = self._get("genre/movie/list")
