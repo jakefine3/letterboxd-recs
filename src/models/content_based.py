@@ -33,10 +33,12 @@ from src.models.features import FeatureBuilder
 class ContentBasedModel:
     def __init__(
         self,
-        max_iter: int = 200,
-        learning_rate: float = 0.05,
-        max_leaf_nodes: int = 31,
+        max_iter: int = 150,
+        learning_rate: float = 0.03,
+        max_leaf_nodes: int = 15,
     ):
+        # defaults from grid search on real data (2026-07-09):
+        # CV MAE 0.554, watchlist lift +0.37 with weight-0.2 weak supervision
         self._pipeline = Pipeline([
             ("features", FeatureBuilder()),
             ("model", HistGradientBoostingRegressor(
@@ -48,9 +50,33 @@ class ContentBasedModel:
         ])
         self._fitted = False
 
-    def fit(self, df: pd.DataFrame) -> "ContentBasedModel":
-        y = df["rating"].values.astype(np.float32)
-        self._pipeline.fit(df, y)
+    def fit(
+        self,
+        df: pd.DataFrame,
+        watchlist: pd.DataFrame | None = None,
+        watchlist_weight: float = 0.2,
+    ) -> "ContentBasedModel":
+        """Fit on rated films, optionally using the watchlist as weak supervision.
+
+        Watchlist films are probable-positives: the user chose them but hasn't
+        seen them. They get a pseudo-rating at the user's 75th percentile and
+        a reduced sample weight, so real ratings stay the dominant signal while
+        watchlist-like features (genres, directors, themes) get a nudge.
+        """
+        train = df
+        weights = np.ones(len(df), dtype=np.float32)
+
+        if watchlist is not None and len(watchlist) > 0:
+            pseudo = watchlist.copy()
+            pseudo["rating"] = float(df["rating"].quantile(0.75))
+            train = pd.concat([df, pseudo], ignore_index=True)
+            weights = np.concatenate([
+                weights,
+                np.full(len(pseudo), watchlist_weight, dtype=np.float32),
+            ])
+
+        y = train["rating"].values.astype(np.float32)
+        self._pipeline.fit(train, y, model__sample_weight=weights)
         self._fitted = True
         return self
 

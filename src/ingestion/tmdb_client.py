@@ -120,6 +120,7 @@ class TMDBClient:
             "overview": "",
             "vote_average": None,
             "vote_count": 0,
+            "poster_path": None,
         }
 
         tmdb_id = self._search_id(name, year)
@@ -147,16 +148,33 @@ class TMDBClient:
         base["keywords"] = [k["name"] for k in data.get("keywords", {}).get("keywords", [])]
         base["vote_average"] = data.get("vote_average")
         base["vote_count"] = data.get("vote_count", 0)
+        base["poster_path"] = data.get("poster_path")
 
         return base
+
+    def _genre_name_to_id(self) -> dict:
+        """Map TMDB genre names to IDs (needed for /discover filters)."""
+        data = self._get("genre/movie/list")
+        if not data:
+            return {}
+        return {g["name"]: g["id"] for g in data.get("genres", [])}
 
     def fetch_candidates(
         self,
         seen_ids: set,
         n_popular_pages: int = 5,
         top_films: list | None = None,
+        taste_genres: list | None = None,
+        n_niche_pages: int = 3,
     ) -> "pd.DataFrame":
-        """Fetch unseen candidate films from TMDB: popular + trending + similar-to-favorites.
+        """Fetch unseen candidate films from TMDB.
+
+        Four sources:
+          - popular + trending (broad, well-known pool)
+          - similar-to-favorites (personalised pool)
+          - niche discovery: acclaimed films (vote_average >= 7) in the user's
+            top genres with a capped vote_count, so the pool includes quality
+            films outside the blockbuster mainstream
 
         Returns a DataFrame with the same columns as enrich_dataframe output,
         minus the rating field (candidates are unrated).
@@ -178,6 +196,22 @@ class TMDBClient:
             data = self._get(f"movie/{film_id}/similar")
             if data:
                 candidate_ids.update(m["id"] for m in data.get("results", []))
+
+        if taste_genres:
+            genre_map = self._genre_name_to_id()
+            genre_ids = [str(genre_map[g]) for g in taste_genres if g in genre_map]
+            if genre_ids:
+                for page in range(1, n_niche_pages + 1):
+                    data = self._get("discover/movie", {
+                        "with_genres": "|".join(genre_ids),
+                        "vote_average.gte": 7.0,
+                        "vote_count.gte": 200,
+                        "vote_count.lte": 3000,  # cap filters out blockbusters
+                        "sort_by": "vote_average.desc",
+                        "page": page,
+                    })
+                    if data:
+                        candidate_ids.update(m["id"] for m in data.get("results", []))
 
         candidate_ids -= set(seen_ids)
         candidate_ids.discard(None)
@@ -215,6 +249,7 @@ class TMDBClient:
                     "overview": data.get("overview", "") or "",
                     "vote_average": data.get("vote_average"),
                     "vote_count": data.get("vote_count", 0),
+                    "poster_path": data.get("poster_path"),
                 })
 
         self._save_cache()
@@ -278,6 +313,7 @@ class TMDBClient:
                     "overview": data.get("overview", "") or "",
                     "vote_average": data.get("vote_average"),
                     "vote_count": data.get("vote_count", 0),
+                    "poster_path": data.get("poster_path"),
                 })
 
         self._save_cache()
@@ -293,7 +329,8 @@ class TMDBClient:
         import pandas as pd
 
         tmdb_cols = ["tmdb_id", "genres", "director", "cast", "keywords",
-                     "runtime", "language", "country", "overview", "vote_average", "vote_count"]
+                     "runtime", "language", "country", "overview", "vote_average",
+                     "vote_count", "poster_path"]
         for col in tmdb_cols:
             if col not in df.columns:
                 df[col] = None
