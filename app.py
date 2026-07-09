@@ -197,11 +197,25 @@ def stars(rating: float) -> str:
 # Cached pipeline stages
 # ----------------------------------------------------------------------
 
+def _tmdb_api_key() -> str | None:
+    """Local dev: .env via os.getenv. Streamlit Cloud: st.secrets."""
+    key = os.getenv("TMDB_API_KEY")
+    if key:
+        return key
+    try:
+        return st.secrets["TMDB_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        return None
+
+
 @st.cache_resource
 def get_client() -> TMDBClient:
-    api_key = os.getenv("TMDB_API_KEY")
+    api_key = _tmdb_api_key()
     if not api_key:
-        st.error("TMDB_API_KEY not set — copy .env.example to .env and add your key.")
+        st.error(
+            "TMDB_API_KEY not set. Locally: copy .env.example to .env and add your key. "
+            "On Streamlit Cloud: add it under App settings → Secrets."
+        )
         st.stop()
     return TMDBClient(api_key=api_key)
 
