@@ -1,3 +1,12 @@
-# Dependencies are managed via pyproject.toml + uv.lock.
-# To install: uv sync
-# To add a package: uv add <package>
+# Deployment requirements (Streamlit Cloud installs from this file).
+# Minimal set for app.py — heavy offline deps (torch, sentence-transformers)
+# intentionally excluded; for local dev use `uv sync` with pyproject.toml.
+streamlit>=1.59
+pandas>=3.0
+numpy>=2.4
+scikit-learn>=1.8
+requests>=2.34
+curl_cffi>=0.15
+beautifulsoup4>=4.14
+lxml>=6.1
+python-dotenv>=1.2
