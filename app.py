@@ -163,23 +163,16 @@ h1, h2, h3 { color: #fff !important; letter-spacing: -0.5px; }
     -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
     mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
 }
-.lb-marquee .label {
-    color: #678;
-    font-size: .75rem;
-    text-transform: uppercase;
-    letter-spacing: 2px;
-    margin-bottom: 10px;
-}
 .lb-marquee-track {
     display: flex;
-    gap: 12px;
+    gap: 14px;
     width: max-content;
-    animation: lb-scroll 60s linear infinite;
+    animation: lb-scroll var(--lb-scroll-duration, 300s) linear infinite;
 }
 .lb-marquee-track:hover { animation-play-state: paused; }
 .lb-marquee-track img {
-    height: 150px;
-    border-radius: 4px;
+    height: 320px;
+    border-radius: 6px;
     border: 1px solid #456;
     transition: transform .15s ease;
 }
@@ -268,23 +261,24 @@ def poster_grid(films: pd.DataFrame, n_cols: int = 5):
                 )
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
-def trending_posters() -> list[dict]:
-    return get_client().trending_posters()
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def top_rated_posters() -> list[dict]:
+    return get_client().top_rated_posters()
 
 
-def render_trending_marquee():
-    films = trending_posters()
+def render_greats_marquee():
+    films = top_rated_posters()
     if not films:
         return
     imgs = "".join(
         f'<img src="{_MARQUEE_POSTER_BASE}{f["poster_path"]}" alt="{f["name"]}" title="{f["name"]}">'
         for f in films
     )
+    # scale duration with film count so scroll speed stays constant (~35px/s)
+    duration = len(films) * 7
     st.markdown(
         f"""
-        <div class="lb-marquee">
-            <div class="label">🔥 Trending this week</div>
+        <div class="lb-marquee" style="--lb-scroll-duration: {duration}s;">
             <div class="lb-marquee-track">{imgs}{imgs}</div>
         </div>
         """,
@@ -315,7 +309,7 @@ col_input, col_slider = st.columns([2, 1])
 with col_input:
     username = st.text_input(
         "Letterboxd username",
-        placeholder="e.g. jakefine",
+        placeholder="e.g. martinscorsese",
         help="Your profile must be public.",
     )
 with col_slider:
@@ -327,7 +321,7 @@ hide_mainstream = st.toggle(
 )
 
 if not username:
-    render_trending_marquee()
+    render_greats_marquee()
     st.stop()
 
 # ----------------------------------------------------------------------
@@ -445,5 +439,3 @@ with tab_taste:
         st.subheader("Your rating distribution")
         dist = enriched["rating"].value_counts().sort_index()
         st.bar_chart(dist, color="#40bcf4")
-
-render_trending_marquee()
