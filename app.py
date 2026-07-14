@@ -343,13 +343,13 @@ quote, film, year = st.session_state.quote
 
 st.markdown(
     f"""
-    <div class=”lb-title”>Letterboxd <span class=”accent”>Insights</span></div>
-    <div class=”lb-dots”><span class=”lb-dot-orange”>●</span><span class=”lb-dot-green”>●</span><span class=”lb-dot-blue”>●</span></div>
-    <div class=”lb-quote”>”{quote}” <span class=”src”>— <b>{film}</b> ({year})</span></div>
-    “””,
+    <div class="lb-title">Letterboxd <span class="accent">Insights</span></div>
+    <div class="lb-dots"><span class="lb-dot-orange">●</span><span class="lb-dot-green">●</span><span class="lb-dot-blue">●</span></div>
+    <div class="lb-quote">"{quote}" <span class="src">— <b>{film}</b> ({year})</span></div>
+    """,
     unsafe_allow_html=True,
 )
-st.write(“Understand your taste. Discover what's next. Enter your public Letterboxd username to get started.”)
+st.write("Understand your taste. Discover what's next. Enter your public Letterboxd username to get started.")
 
 col_input, col_slider = st.columns([2, 1])
 with col_input:
@@ -421,10 +421,8 @@ st.markdown(
 if n_rated < 30:
     st.warning("Fewer than 30 ratings — recommendations improve as you rate more films.")
 
-_enrich_msg = (
-    f"Enriching {n_rated} films with TMDB metadata — this takes ~{"30s" if n_rated > 500 else "10s"} "
-    f"on first load, then it's cached."
-)
+_enrich_time = "~30s" if n_rated > 500 else "~10s"
+_enrich_msg = f"Enriching {n_rated} films with TMDB metadata — first load takes {_enrich_time}, then it's cached."
 with st.spinner(_enrich_msg):
     enriched = enrich(ratings_df)
     wl_enriched = enrich(watchlist_df) if len(watchlist_df) else watchlist_df
