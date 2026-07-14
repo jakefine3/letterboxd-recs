@@ -41,7 +41,7 @@ class ScrapeError(Exception):
 class LetterboxdScraper:
     def __init__(self, scraperapi_key: str | None = None):
         self._scraperapi_key = scraperapi_key
-        self._session = cffi_requests.Session(impersonate="chrome")
+        self._session = None if scraperapi_key else cffi_requests.Session(impersonate="chrome")
 
     def _get_page(self, url: str) -> BeautifulSoup | None:
         if self._scraperapi_key:
