@@ -50,7 +50,7 @@ _QUOTES = [
     ("I drink your milkshake!", "There Will Be Blood", 2007),
 ]
 
-st.set_page_config(page_title="Letterboxd Recs", page_icon="🎬", layout="wide")
+st.set_page_config(page_title="Letterboxd Insights", page_icon="🎬", layout="wide")
 
 # ----------------------------------------------------------------------
 # Letterboxd-style theming
@@ -343,13 +343,13 @@ quote, film, year = st.session_state.quote
 
 st.markdown(
     f"""
-    <div class="lb-title">Letterboxd <span class="accent">Recs</span></div>
-    <div class="lb-dots"><span class="lb-dot-orange">●</span><span class="lb-dot-green">●</span><span class="lb-dot-blue">●</span></div>
-    <div class="lb-quote">“{quote}” <span class="src">— <b>{film}</b> ({year})</span></div>
-    """,
+    <div class=”lb-title”>Letterboxd <span class=”accent”>Insights</span></div>
+    <div class=”lb-dots”><span class=”lb-dot-orange”>●</span><span class=”lb-dot-green”>●</span><span class=”lb-dot-blue”>●</span></div>
+    <div class=”lb-quote”>”{quote}” <span class=”src”>— <b>{film}</b> ({year})</span></div>
+    “””,
     unsafe_allow_html=True,
 )
-st.write("We'll learn your taste from your Letterboxd ratings and find films you'll love.")
+st.write(“Understand your taste. Discover what's next. Enter your public Letterboxd username to get started.”)
 
 col_input, col_slider = st.columns([2, 1])
 with col_input:
