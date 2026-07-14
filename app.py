@@ -385,7 +385,7 @@ ratings_df = None
 watchlist_df = None
 
 try:
-    with st.spinner(f"Reading {username}'s ratings and watchlist from Letterboxd..."):
+    with st.spinner(f"Scraping {username}'s ratings from Letterboxd..."):
         ratings_df, watchlist_df = scrape_profile(username.strip().lower(), _scraperapi_key())
 except ScrapeError as e:
     if "403" in str(e):
@@ -421,7 +421,11 @@ st.markdown(
 if n_rated < 30:
     st.warning("Fewer than 30 ratings — recommendations improve as you rate more films.")
 
-with st.spinner("Enriching your films with TMDB metadata..."):
+_enrich_msg = (
+    f"Enriching {n_rated} films with TMDB metadata — this takes ~{"30s" if n_rated > 500 else "10s"} "
+    f"on first load, then it's cached."
+)
+with st.spinner(_enrich_msg):
     enriched = enrich(ratings_df)
     wl_enriched = enrich(watchlist_df) if len(watchlist_df) else watchlist_df
 

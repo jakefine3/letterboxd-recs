@@ -17,6 +17,7 @@ Usage:
 import re
 import logging
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests as stdlib_requests
 import pandas as pd
@@ -85,24 +86,44 @@ class LetterboxdScraper:
         return rows
 
     def _scrape_paginated(self, base_url: str, with_rating: bool) -> pd.DataFrame:
-        all_rows: list[dict] = []
-        for page in range(1, _MAX_PAGES + 1):
-            url = base_url if page == 1 else f"{base_url}page/{page}/"
-            soup = self._get_page(url)
-            if soup is None:
-                if page == 1:
-                    raise ScrapeError(f"Profile not found: {base_url}")
-                break
+        # Page 1 first — validates the profile exists before firing parallel work.
+        first = self._get_page(base_url)
+        if first is None:
+            raise ScrapeError(f"Profile not found: {base_url}")
+        first_rows = self._parse_items(first, with_rating)
+        if not first_rows:
+            return pd.DataFrame()
 
-            rows = self._parse_items(soup, with_rating)
-            if not rows:
+        all_rows: list[dict] = list(first_rows)
+
+        # Fetch remaining pages in parallel batches. Stop as soon as a batch
+        # contains an empty page (signals end of the list).
+        _BATCH = 5
+        for batch_start in range(2, _MAX_PAGES + 1, _BATCH):
+            pages = range(batch_start, min(batch_start + _BATCH, _MAX_PAGES + 1))
+            with ThreadPoolExecutor(max_workers=_BATCH) as ex:
+                futures = {
+                    ex.submit(self._get_page, f"{base_url}page/{p}/"): p
+                    for p in pages
+                }
+                batch: dict[int, list[dict]] = {}
+                for fut in as_completed(futures):
+                    p = futures[fut]
+                    soup = fut.result()
+                    batch[p] = self._parse_items(soup, with_rating) if soup else []
+
+            done = False
+            for p in sorted(batch):
+                if not batch[p]:
+                    done = True
+                    break
+                all_rows.extend(batch[p])
+            if done:
                 break
-            all_rows.extend(rows)
 
         df = pd.DataFrame(all_rows)
         if df.empty:
             return df
-        # page 1 can render duplicate grids; dedupe on identity
         return df.drop_duplicates(subset=["name", "year"]).reset_index(drop=True)
 
     # ------------------------------------------------------------------

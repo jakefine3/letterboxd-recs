@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 _BASE_URL = "https://api.themoviedb.org/3"
 _DEFAULT_CACHE = Path("data/processed/tmdb_cache.json")
 _TOP_CAST = 5
-_MAX_WORKERS = 10  # safe against TMDB's 40 req/sec limit
+_MAX_WORKERS = 20  # safe against TMDB's 40 req/sec limit
 
 
 class TMDBClient:
