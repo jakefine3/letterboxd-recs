@@ -117,6 +117,71 @@ def persona(df: pd.DataFrame) -> str:
     return "Eclectic Watcher"
 
 
+def contrarian_picks(
+    df: pd.DataFrame, n: int = 5, min_votes: int = 1_000
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Films where the user's rating diverges most from TMDB consensus.
+
+    Returns (loved_more, loved_less): films you rated above / below the crowd.
+    Only considers films with enough TMDB votes to have a reliable consensus.
+    """
+    d = df.dropna(subset=["vote_average", "vote_count"]).copy()
+    d = d[d["vote_count"] >= min_votes]
+    d["tmdb_scaled"] = d["vote_average"] / 2.0
+    d["delta"] = d["rating"] - d["tmdb_scaled"]
+    cols = ["name", "year", "rating", "tmdb_scaled", "delta"]
+    return d.nlargest(n, "delta")[cols], d.nsmallest(n, "delta")[cols]
+
+
+def obscurity_profile(df: pd.DataFrame) -> dict:
+    """How mainstream or underground is the user's taste?
+
+    Measures the median vote_count of films the user rated 4+ stars.
+    """
+    loved = df[df["rating"] >= 4.0].dropna(subset=["vote_count"])
+    if loved.empty:
+        return {"label": "Unknown", "median_vote_count": 0, "pct_niche": 0.0}
+
+    median_vc = float(loved["vote_count"].median())
+    pct_niche = float((loved["vote_count"] < 10_000).mean() * 100)
+
+    if median_vc < 5_000:
+        label = "Underground Explorer"
+    elif median_vc < 30_000:
+        label = "Hidden Gem Hunter"
+    elif median_vc < 100_000:
+        label = "Discerning Viewer"
+    elif median_vc < 500_000:
+        label = "Mainstream Enjoyer"
+    else:
+        label = "Blockbuster Fan"
+
+    return {"label": label, "median_vote_count": int(median_vc), "pct_niche": pct_niche}
+
+
+def runtime_sweet_spot(df: pd.DataFrame) -> pd.DataFrame:
+    """Average rating bucketed by runtime (buckets with < 5 films excluded)."""
+    d = df.dropna(subset=["runtime"]).copy()
+    bins = [0, 80, 100, 120, 150, float("inf")]
+    labels = ["<80 min", "80–100", "100–120", "120–150", "150+ min"]
+    d["bucket"] = pd.cut(d["runtime"], bins=bins, labels=labels)
+    g = (
+        d.groupby("bucket", observed=True)["rating"]
+        .agg(["mean", "count"])
+        .reset_index()
+        .rename(columns={"bucket": "length", "mean": "avg_rating"})
+    )
+    return g[g["count"] >= 5]
+
+
+def critic_tendency(df: pd.DataFrame) -> dict:
+    """How much harsher or easier the user rates vs. the TMDB aggregate."""
+    d = df.dropna(subset=["vote_average"]).copy()
+    d["tmdb_scaled"] = d["vote_average"] / 2.0
+    delta = float((d["rating"] - d["tmdb_scaled"]).mean())
+    return {"delta": delta, "n": len(d)}
+
+
 def taste_summary(df: pd.DataFrame) -> list[str]:
     """Plain-English sentences describing the user's taste, strongest first."""
     lines = []

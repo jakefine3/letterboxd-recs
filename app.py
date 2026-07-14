@@ -154,6 +154,28 @@ h1, h2, h3 { color: #fff !important; letter-spacing: -0.5px; }
 .lb-quote .src { font-style: normal; color: #678; font-size: .85rem; }
 .lb-quote .src b { color: #40bcf4; }
 
+/* insight stat cards */
+.lb-stat {
+    background: #2c3440;
+    border: 1px solid #456;
+    border-radius: 8px;
+    padding: 16px 12px;
+    text-align: center;
+    height: 100%;
+}
+.lb-stat .stat-label { color: #678; font-size: .7rem; text-transform: uppercase; letter-spacing: 1.5px; }
+.lb-stat .stat-value { color: #fff; font-size: 1.3rem; font-weight: 800; margin: 4px 0 2px; }
+.lb-stat .stat-sub { color: #9ab; font-size: .75rem; }
+
+/* contrarian film rows */
+.lb-film-row { padding: 8px 0; border-bottom: 1px solid #2c3440; }
+.lb-film-row .fn { color: #fff; font-weight: 600; font-size: .9rem; }
+.lb-film-row .fy { color: #678; font-size: .75rem; margin-left: 4px; }
+.lb-film-row .you { color: #00e054; font-size: .8rem; }
+.lb-film-row .crowd { color: #9ab; font-size: .8rem; }
+.lb-film-row .dp { color: #00e054; font-size: .8rem; font-weight: 700; }
+.lb-film-row .dn { color: #ff8000; font-size: .8rem; font-weight: 700; }
+
 /* trending poster marquee */
 .lb-marquee {
     overflow: hidden;
@@ -449,6 +471,7 @@ with tab_recs:
 # ----------------------------------------------------------------------
 
 with tab_taste:
+    # --- Persona ---
     st.markdown(
         f"""
         <div class="lb-persona">
@@ -459,11 +482,71 @@ with tab_taste:
         unsafe_allow_html=True,
     )
 
-    st.subheader("What's your taste?")
     for line in taste.taste_summary(enriched):
         st.markdown(f"- {line}")
 
     st.divider()
+
+    # --- Stat row ---
+    tendency = taste.critic_tendency(enriched)
+    obs = taste.obscurity_profile(enriched)
+    lang = taste.language_split(enriched)
+    n_enriched = len(enriched)
+    pct_foreign = lang["foreign_count"] / n_enriched * 100 if n_enriched else 0
+
+    tend_sign = "+" if tendency["delta"] > 0 else ""
+    tend_label = "more generous than avg" if tendency["delta"] > 0 else "harsher than avg"
+
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    for col, label, value, sub in [
+        (sc1, "Films rated", str(n_enriched), "in your library"),
+        (sc2, "vs. TMDB crowd", f"{tend_sign}{tendency['delta']:.2f}★", tend_label),
+        (sc3, "Taste profile", obs["label"], f"median {obs['median_vote_count']:,} votes on loved films"),
+        (sc4, "Non-English", f"{pct_foreign:.0f}%", f"{lang['foreign_count']} films"),
+    ]:
+        with col:
+            st.markdown(
+                f'<div class="lb-stat">'
+                f'<div class="stat-label">{label}</div>'
+                f'<div class="stat-value" style="font-size:{"1rem" if len(value) > 10 else "1.3rem"}">{value}</div>'
+                f'<div class="stat-sub">{sub}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    st.divider()
+
+    # --- You vs. the crowd ---
+    st.subheader("You vs. the crowd")
+    loved_more, loved_less = taste.contrarian_picks(enriched, n=5)
+
+    def _film_rows(frame: pd.DataFrame, positive: bool) -> str:
+        html = ""
+        for _, r in frame.iterrows():
+            yr = int(r["year"]) if pd.notna(r["year"]) else "?"
+            delta_cls = "dp" if positive else "dn"
+            delta_str = f"+{r['delta']:.1f}★" if positive else f"{r['delta']:.1f}★"
+            html += (
+                f'<div class="lb-film-row">'
+                f'<span class="fn">{r["name"]}</span><span class="fy">({yr})</span><br>'
+                f'<span class="you">You {r["rating"]:.1f}★</span>'
+                f' · <span class="crowd">TMDB {r["tmdb_scaled"]:.1f}★</span>'
+                f' · <span class="{delta_cls}">{delta_str}</span>'
+                f'</div>'
+            )
+        return html or '<p style="color:#678;font-size:.85rem">Not enough data yet.</p>'
+
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.markdown("**Hidden gems — you loved, the crowd slept on**")
+        st.markdown(_film_rows(loved_more, positive=True), unsafe_allow_html=True)
+    with cc2:
+        st.markdown("**Overhyped — TMDB loves, you don't**")
+        st.markdown(_film_rows(loved_less, positive=False), unsafe_allow_html=True)
+
+    st.divider()
+
+    # --- Directors / themes / charts ---
     col1, col2 = st.columns(2)
 
     with col1:
@@ -492,3 +575,10 @@ with tab_taste:
         st.subheader("Your rating distribution")
         dist = enriched["rating"].value_counts().sort_index()
         st.bar_chart(dist, color="#40bcf4")
+
+    # --- Runtime sweet spot ---
+    rt = taste.runtime_sweet_spot(enriched)
+    if not rt.empty:
+        st.subheader("Runtime sweet spot")
+        st.caption("Average rating you give by film length.")
+        st.bar_chart(rt.set_index("length")["avg_rating"], color="#ff8000")
