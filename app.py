@@ -422,7 +422,7 @@ if n_rated < 30:
     st.warning("Fewer than 30 ratings — recommendations improve as you rate more films.")
 
 _enrich_time = "~30s" if n_rated > 500 else "~10s"
-_enrich_msg = f"Enriching {n_rated} films with TMDB metadata — first load takes {_enrich_time}, then it's cached."
+_enrich_msg = f"Enriching {n_rated} films with TMDB metadata"
 with st.spinner(_enrich_msg):
     enriched = enrich(ratings_df)
     wl_enriched = enrich(watchlist_df) if len(watchlist_df) else watchlist_df
@@ -552,7 +552,7 @@ with tab_taste:
         st.markdown("**Hidden gems — you loved, the crowd slept on**")
         st.markdown(_film_rows(loved_more, positive=True), unsafe_allow_html=True)
     with cc2:
-        st.markdown("**Overhyped — TMDB loves, you don't**")
+        st.markdown("**Overhyped — People love it, you don't**")
         st.markdown(_film_rows(loved_less, positive=False), unsafe_allow_html=True)
 
     st.divider()
