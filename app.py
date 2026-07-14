@@ -401,6 +401,12 @@ with st.spinner("Training your taste model..."):
     # watchlist = weak positive signal: films you chose but haven't seen yet
     model.fit(enriched, watchlist=wl_enriched if len(wl_enriched) else None)
 
+if model.is_flat_rater:
+    st.warning(
+        "Your ratings are nearly all the same score, so the model can't learn your preferences "
+        "from scores alone. Recommendations are based on the genres you watch most instead."
+    )
+
 tab_recs, tab_taste = st.tabs(["🎬  Your picks", "🧠  Your taste"])
 
 # ----------------------------------------------------------------------

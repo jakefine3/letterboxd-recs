@@ -21,6 +21,8 @@ Why a Pipeline
 Wrapping FeatureBuilder inside a Pipeline ensures that during cross-validation the scaler
 and vocabulary are fit only on the training fold — no leakage from the validation fold.
 """
+import ast
+
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
@@ -28,6 +30,21 @@ from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import Pipeline
 
 from src.models.features import FeatureBuilder
+
+_FLAT_RATER_STD = 0.5   # below this threshold ratings carry no preference signal
+_BAYES_M = 1000.0
+_BAYES_C = 6.5
+
+
+def _parse_genres(val) -> list[str]:
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        try:
+            return ast.literal_eval(val)
+        except (ValueError, SyntaxError):
+            return []
+    return []
 
 
 class ContentBasedModel:
@@ -49,6 +66,12 @@ class ContentBasedModel:
             )),
         ])
         self._fitted = False
+        self._flat_rater = False
+        self._genre_weights: dict[str, float] = {}
+
+    @property
+    def is_flat_rater(self) -> bool:
+        return self._flat_rater
 
     def fit(
         self,
@@ -62,7 +85,23 @@ class ContentBasedModel:
         seen them. They get a pseudo-rating at the user's 75th percentile and
         a reduced sample weight, so real ratings stay the dominant signal while
         watchlist-like features (genres, directors, themes) get a nudge.
+
+        If the user's rating distribution has very low variance (flat-rater), the
+        regression model can't learn preferences — we fall back to genre-frequency
+        ranking instead and skip HGBR fitting entirely.
         """
+        self._flat_rater = df["rating"].std() < _FLAT_RATER_STD
+
+        if self._flat_rater:
+            counts: dict[str, int] = {}
+            for genres in df["genres"].apply(_parse_genres):
+                for g in genres:
+                    counts[g] = counts.get(g, 0) + 1
+            total = sum(counts.values()) or 1
+            self._genre_weights = {g: c / total for g, c in counts.items()}
+            self._fitted = True
+            return self
+
         train = df
         weights = np.ones(len(df), dtype=np.float32)
 
@@ -92,9 +131,29 @@ class ContentBasedModel:
             "rmse_std": float(rmse.std()),
         }
 
+    def _genre_affinity_predict(self, candidates: pd.DataFrame) -> np.ndarray:
+        scores = []
+        for _, row in candidates.iterrows():
+            genres = _parse_genres(row.get("genres", []))
+            genre_score = (
+                sum(self._genre_weights.get(g, 0.0) for g in genres) / max(len(genres), 1)
+            )
+            vote_cnt = float(row.get("vote_count") or 0)
+            raw_avg = float(row.get("vote_average") or _BAYES_C)
+            bayesian = (vote_cnt * raw_avg + _BAYES_M * _BAYES_C) / (vote_cnt + _BAYES_M)
+            scores.append(0.7 * genre_score + 0.3 * (bayesian / 10.0))
+
+        raw = np.array(scores, dtype=np.float32)
+        lo, hi = raw.min(), raw.max()
+        if hi > lo:
+            return (1.0 + 4.0 * (raw - lo) / (hi - lo)).astype(np.float32)
+        return np.full_like(raw, 3.0)
+
     def predict(self, candidates: pd.DataFrame) -> np.ndarray:
         if not self._fitted:
             raise RuntimeError("Call fit() before predict().")
+        if self._flat_rater:
+            return self._genre_affinity_predict(candidates)
         return np.clip(self._pipeline.predict(candidates), 0.5, 5.0).astype(np.float32)
 
     def recommend(self, candidates: pd.DataFrame, n: int = 10) -> pd.DataFrame:
