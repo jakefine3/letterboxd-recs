@@ -361,10 +361,17 @@ with col_input:
 with col_slider:
     n_recs = st.slider("How many picks?", 5, 50, 20, step=5)
 
-hide_mainstream = st.toggle(
-    "Prefer hidden gems",
-    help="Skews recommendations away from films everyone's already seen.",
-)
+tog1, tog2 = st.columns(2)
+with tog1:
+    hide_mainstream = st.toggle(
+        "Prefer hidden gems",
+        help="Skews recommendations away from films everyone's already seen.",
+    )
+with tog2:
+    hide_watchlist = st.toggle(
+        "Exclude watchlist",
+        help="Hides films already on your Letterboxd watchlist so you discover something new.",
+    )
 
 if not username:
     render_greats_marquee()
@@ -447,13 +454,15 @@ with tab_recs:
         candidates = candidates[candidates["vote_count"] < 5000]
     candidates = candidates[candidates["vote_count"] >= 50]
 
-    # watchlist films are prime candidates — the user already wants to see them
     candidates["on_watchlist"] = False
-    if len(wl_enriched):
+    if len(wl_enriched) and not hide_watchlist:
         wl_pool = wl_enriched.copy()
         wl_pool["on_watchlist"] = True
         candidates = pd.concat([wl_pool, candidates], ignore_index=True)
         candidates = candidates.drop_duplicates(subset="tmdb_id", keep="first")
+    elif len(wl_enriched) and hide_watchlist:
+        wl_ids = set(wl_enriched["tmdb_id"].dropna().astype(int))
+        candidates = candidates[~candidates["tmdb_id"].isin(wl_ids)]
     candidates = candidates.reset_index(drop=True)
 
     recs = candidates.copy()
