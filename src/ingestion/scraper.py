@@ -16,7 +16,9 @@ Usage:
 """
 import re
 import logging
+import urllib.parse
 
+import requests as stdlib_requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cffi_requests
@@ -37,11 +39,21 @@ class ScrapeError(Exception):
 
 
 class LetterboxdScraper:
-    def __init__(self):
+    def __init__(self, scraperapi_key: str | None = None):
+        self._scraperapi_key = scraperapi_key
         self._session = cffi_requests.Session(impersonate="chrome")
 
     def _get_page(self, url: str) -> BeautifulSoup | None:
-        resp = self._session.get(url, timeout=15)
+        if self._scraperapi_key:
+            proxy_url = (
+                "http://api.scraperapi.com/"
+                f"?api_key={self._scraperapi_key}"
+                f"&url={urllib.parse.quote(url, safe='')}"
+            )
+            resp = stdlib_requests.get(proxy_url, timeout=30)
+        else:
+            resp = self._session.get(url, timeout=15)
+
         if resp.status_code == 404:
             return None
         if resp.status_code != 200:

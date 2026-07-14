@@ -208,6 +208,16 @@ def _tmdb_api_key() -> str | None:
         return None
 
 
+def _scraperapi_key() -> str | None:
+    key = os.getenv("SCRAPERAPI_KEY")
+    if key:
+        return key
+    try:
+        return st.secrets["SCRAPERAPI_KEY"]
+    except (KeyError, FileNotFoundError):
+        return None
+
+
 @st.cache_resource
 def get_client() -> TMDBClient:
     api_key = _tmdb_api_key()
@@ -221,8 +231,8 @@ def get_client() -> TMDBClient:
 
 
 @st.cache_data(show_spinner=False)
-def scrape_profile(username: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    scraper = LetterboxdScraper()
+def scrape_profile(username: str, scraperapi_key: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    scraper = LetterboxdScraper(scraperapi_key=scraperapi_key)
     return scraper.fetch_ratings(username), scraper.fetch_watchlist(username)
 
 
@@ -342,11 +352,34 @@ if not username:
 # Pipeline
 # ----------------------------------------------------------------------
 
+ratings_df = None
+watchlist_df = None
+
 try:
     with st.spinner(f"Reading {username}'s ratings and watchlist from Letterboxd..."):
-        ratings_df, watchlist_df = scrape_profile(username.strip().lower())
+        ratings_df, watchlist_df = scrape_profile(username.strip().lower(), _scraperapi_key())
 except ScrapeError as e:
-    st.error(str(e))
+    if "403" in str(e):
+        st.error(
+            "Letterboxd is blocking requests from our servers — this is a Cloudflare "
+            "restriction on cloud-hosted apps, not an issue with your account."
+        )
+        st.info(
+            "**Upload your ratings.csv as a workaround:**\n\n"
+            "1. Go to **letterboxd.com → Profile → Settings → Import & Export**\n"
+            "2. Click **Export Your Data** and unzip the downloaded file\n"
+            "3. Upload `ratings.csv` below"
+        )
+    else:
+        st.error(str(e))
+
+    uploaded = st.file_uploader("ratings.csv", type="csv", label_visibility="collapsed")
+    if uploaded is not None:
+        from src.ingestion.csv_loader import load_ratings
+        ratings_df = load_ratings(uploaded)
+        watchlist_df = pd.DataFrame(columns=["name", "year"])
+
+if ratings_df is None:
     st.stop()
 
 n_rated = len(ratings_df)
