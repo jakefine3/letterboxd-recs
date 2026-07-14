@@ -125,7 +125,10 @@ def contrarian_picks(
     Returns (loved_more, loved_less): films you rated above / below the crowd.
     Only considers films with enough TMDB votes to have a reliable consensus.
     """
-    d = df.dropna(subset=["vote_average", "vote_count"]).copy()
+    d = df.copy()
+    d["vote_average"] = pd.to_numeric(d["vote_average"], errors="coerce")
+    d["vote_count"] = pd.to_numeric(d["vote_count"], errors="coerce")
+    d = d.dropna(subset=["vote_average", "vote_count"])
     d = d[d["vote_count"] >= min_votes]
     d["tmdb_scaled"] = d["vote_average"] / 2.0
     d["delta"] = d["rating"] - d["tmdb_scaled"]
@@ -138,7 +141,9 @@ def obscurity_profile(df: pd.DataFrame) -> dict:
 
     Measures the median vote_count of films the user rated 4+ stars.
     """
-    loved = df[df["rating"] >= 4.0].dropna(subset=["vote_count"])
+    d = df.copy()
+    d["vote_count"] = pd.to_numeric(d["vote_count"], errors="coerce")
+    loved = d[d["rating"] >= 4.0].dropna(subset=["vote_count"])
     if loved.empty:
         return {"label": "Unknown", "median_vote_count": 0, "pct_niche": 0.0}
 
@@ -161,7 +166,9 @@ def obscurity_profile(df: pd.DataFrame) -> dict:
 
 def runtime_sweet_spot(df: pd.DataFrame) -> pd.DataFrame:
     """Average rating bucketed by runtime (buckets with < 5 films excluded)."""
-    d = df.dropna(subset=["runtime"]).copy()
+    d = df.copy()
+    d["runtime"] = pd.to_numeric(d["runtime"], errors="coerce")
+    d = d.dropna(subset=["runtime"])
     bins = [0, 80, 100, 120, 150, float("inf")]
     labels = ["<80 min", "80–100", "100–120", "120–150", "150+ min"]
     d["bucket"] = pd.cut(d["runtime"], bins=bins, labels=labels)
@@ -176,7 +183,9 @@ def runtime_sweet_spot(df: pd.DataFrame) -> pd.DataFrame:
 
 def critic_tendency(df: pd.DataFrame) -> dict:
     """How much harsher or easier the user rates vs. the TMDB aggregate."""
-    d = df.dropna(subset=["vote_average"]).copy()
+    d = df.copy()
+    d["vote_average"] = pd.to_numeric(d["vote_average"], errors="coerce")
+    d = d.dropna(subset=["vote_average"])
     d["tmdb_scaled"] = d["vote_average"] / 2.0
     delta = float((d["rating"] - d["tmdb_scaled"]).mean())
     return {"delta": delta, "n": len(d)}
