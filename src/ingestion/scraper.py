@@ -46,12 +46,7 @@ class LetterboxdScraper:
 
     def _get_page(self, url: str) -> BeautifulSoup | None:
         if self._scraperapi_key:
-            proxy_url = (
-                "http://api.scraperapi.com/"
-                f"?api_key={self._scraperapi_key}"
-                f"&url={urllib.parse.quote(url, safe='')}"
-            )
-            resp = stdlib_requests.get(proxy_url, timeout=30)
+            resp = self._get_via_proxy(url)
         else:
             resp = self._session.get(url, timeout=15)
 
@@ -60,6 +55,27 @@ class LetterboxdScraper:
         if resp.status_code != 200:
             raise ScrapeError(f"Letterboxd returned {resp.status_code} for {url}")
         return BeautifulSoup(resp.text, "lxml")
+
+    def _get_via_proxy(self, url: str, attempts: int = 3):
+        """Fetch through ScraperAPI. Their service retries upstream internally,
+        so a single request can take a minute — their docs recommend a 70s
+        timeout. Retry a couple of times before giving up."""
+        proxy_url = (
+            "http://api.scraperapi.com/"
+            f"?api_key={self._scraperapi_key}"
+            f"&url={urllib.parse.quote(url, safe='')}"
+        )
+        last_err = None
+        for attempt in range(attempts):
+            try:
+                return stdlib_requests.get(proxy_url, timeout=70)
+            except (stdlib_requests.Timeout, stdlib_requests.ConnectionError) as e:
+                last_err = e
+                logger.warning("ScraperAPI attempt %d/%d failed for %s: %s",
+                               attempt + 1, attempts, url, e)
+        raise ScrapeError(
+            f"Letterboxd is responding slowly right now — please try again in a minute. ({last_err})"
+        )
 
     @staticmethod
     def _parse_items(soup: BeautifulSoup, with_rating: bool) -> list[dict]:
