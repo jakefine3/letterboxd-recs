@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      APP_URL: ${{ vars.STREAMLIT_APP_URL }}
+      APP_URL: https://letterboxd-recs.streamlit.app
     steps:
       - uses: actions/setup-python@v5
         with:
