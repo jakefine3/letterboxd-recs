@@ -1,0 +1,40 @@
+# Streamlit Community Cloud sleeps apps after 12h without traffic.
+# A plain curl doesn't count (the app only "sees" a visitor once the
+# websocket opens), so load it in a real headless browser every 6h and
+# click the wake button if it already fell asleep.
+name: keep-awake
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      APP_URL: ${{ vars.STREAMLIT_APP_URL }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright && playwright install --with-deps chromium
+      - name: Visit app
+        shell: python
+        run: |
+          import os
+          from playwright.sync_api import sync_playwright
+
+          url = os.environ["APP_URL"]
+          with sync_playwright() as p:
+              page = p.chromium.launch().new_page()
+              page.goto(url, wait_until="networkidle", timeout=120_000)
+              wake = page.get_by_role("button", name="get this app back up")
+              if wake.count():
+                  print("app was asleep, waking it")
+                  wake.click()
+                  page.wait_for_timeout(90_000)
+              else:
+                  page.wait_for_timeout(15_000)
+              print("visited", url)

@@ -152,17 +152,16 @@ class TMDBClient:
 
         return base
 
-    def top_rated_posters(self, n_pages: int = 5) -> list[dict]:
-        """Poster paths + names for TMDB's all-time top-rated films (for UI display)."""
-        films = []
+    def trending_posters(self, n_pages: int = 3) -> list[dict]:
+        """Poster paths + names for films trending on TMDB this week (for UI display)."""
+        films, seen = [], set()
         for page in range(1, n_pages + 1):
-            data = self._get("movie/top_rated", {"page": page})
-            if data:
-                films.extend(
-                    {"name": m.get("title"), "poster_path": m.get("poster_path")}
-                    for m in data.get("results", [])
-                    if m.get("poster_path")
-                )
+            data = self._get("trending/movie/week", {"page": page})
+            for m in (data or {}).get("results", []):
+                # trending pages can repeat a film across page boundaries
+                if m.get("poster_path") and m["id"] not in seen:
+                    seen.add(m["id"])
+                    films.append({"name": m.get("title"), "poster_path": m["poster_path"]})
         return films
 
     def _genre_name_to_id(self) -> dict:

@@ -5,6 +5,7 @@ Run with:  uv run streamlit run app.py
 Input: a public Letterboxd username (scraped live). The CSV path still exists
 in the backend (src/ingestion/csv_loader.py) for offline experimentation.
 """
+import html
 import os
 import random
 
@@ -69,14 +70,25 @@ h1, h2, h3 { color: #fff !important; letter-spacing: -0.5px; }
 .lb-dot-green  { color: #00e054; }
 .lb-dot-blue   { color: #40bcf4; }
 
-/* movie cards */
+/* movie cards: one CSS grid so every card in a row shares a height */
+.lb-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 16px;
+    margin-bottom: 16px;
+}
+@media (max-width: 900px) { .lb-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .lb-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+a.lb-card, a.lb-card:hover { text-decoration: none; }
 .lb-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
     background: #2c3440;
     border-radius: 8px;
     padding: 10px;
     text-align: center;
     transition: transform .15s ease, box-shadow .15s ease;
-    height: 100%;
 }
 .lb-card:hover {
     transform: translateY(-4px);
@@ -85,8 +97,12 @@ h1, h2, h3 { color: #fff !important; letter-spacing: -0.5px; }
 .lb-card img {
     border-radius: 4px;
     width: 100%;
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
     border: 1px solid #456;
 }
+/* badge sits at the bottom of the card regardless of title length */
+.lb-card .wl-slot { margin-top: auto; padding-top: 4px; }
 .lb-card .title {
     color: #fff;
     font-weight: 700;
@@ -106,7 +122,6 @@ h1, h2, h3 { color: #fff !important; letter-spacing: -0.5px; }
     font-weight: 700;
     letter-spacing: 1px;
     padding: 1px 6px;
-    margin-top: 4px;
 }
 
 /* taste persona banner */
@@ -284,36 +299,38 @@ def poster_url(path) -> str:
     return f"{_POSTER_BASE}{path}" if isinstance(path, str) and path else _EMPTY_POSTER
 
 
-def poster_grid(films: pd.DataFrame, n_cols: int = 5):
-    rows = [films.iloc[i:i + n_cols] for i in range(0, len(films), n_cols)]
-    for chunk in rows:
-        cols = st.columns(n_cols)
-        for col, (_, movie) in zip(cols, chunk.iterrows()):
-            with col:
-                badge = '<div class="wl-badge">ON YOUR WATCHLIST</div>' if movie.get("on_watchlist") else ""
-                st.markdown(
-                    f"""
-                    <div class="lb-card">
-                        <img src="{poster_url(movie.get('poster_path'))}" alt="{movie['name']}">
-                        <div class="title">{movie['name']}</div>
-                        <div class="year">{movie['year']}</div>
-                        <div class="stars">{stars(movie['predicted_rating'])}
-                            <span style="color:#678;font-size:.75rem;">{movie['predicted_rating']:.1f}</span>
-                        </div>
-                        {badge}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+def letterboxd_url(tmdb_id) -> str:
+    # letterboxd redirects /tmdb/<id>/ to the film's own page
+    return f"https://letterboxd.com/tmdb/{int(tmdb_id)}/"
 
 
-@st.cache_data(ttl=24 * 3600, show_spinner=False)
-def top_rated_posters() -> list[dict]:
-    return get_client().top_rated_posters()
+def poster_grid(films: pd.DataFrame):
+    cards = []
+    for _, movie in films.iterrows():
+        name = html.escape(str(movie["name"]))
+        badge = '<span class="wl-badge">ON YOUR WATCHLIST</span>' if movie.get("on_watchlist") else ""
+        # no indentation: markdown would treat 4+ leading spaces as a code block
+        cards.append(
+            f'<a class="lb-card" href="{letterboxd_url(movie["tmdb_id"])}" target="_blank" rel="noopener">'
+            f'<img src="{poster_url(movie.get("poster_path"))}" alt="{name}">'
+            f'<div class="title">{name}</div>'
+            f'<div class="year">{movie["year"]}</div>'
+            f'<div class="stars">{stars(movie["predicted_rating"])} '
+            f'<span style="color:#678;font-size:.75rem;">{movie["predicted_rating"]:.1f}</span></div>'
+            f'<div class="wl-slot">{badge}</div>'
+            f'</a>'
+        )
+    st.markdown(f'<div class="lb-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
-def render_greats_marquee():
-    films = top_rated_posters()
+# trending shifts daily, so refresh a few times a day rather than once
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def trending_posters() -> list[dict]:
+    return get_client().trending_posters()
+
+
+def render_trending_marquee():
+    films = trending_posters()
     if not films:
         return
     imgs = "".join(
@@ -374,7 +391,7 @@ with tog2:
     )
 
 if not username:
-    render_greats_marquee()
+    render_trending_marquee()
     st.stop()
 
 # ----------------------------------------------------------------------
