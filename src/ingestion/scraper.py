@@ -39,16 +39,41 @@ class ScrapeError(Exception):
     """Raised when a profile can't be fetched (bad username, blocked, etc.)."""
 
 
+class BlockedError(ScrapeError):
+    """Letterboxd (Cloudflare) refused the request and no proxy could get through."""
+
+
+class ProxyQuotaError(ScrapeError):
+    """ScraperAPI refused the request: credits used up or key invalid."""
+
+
+# statuses Cloudflare uses when it blocks a datacenter IP
+_BLOCKED = {403, 429, 503}
+
+
 class LetterboxdScraper:
     def __init__(self, scraperapi_key: str | None = None):
         self._scraperapi_key = scraperapi_key
-        self._session = None if scraperapi_key else cffi_requests.Session(impersonate="chrome")
+        self._session = cffi_requests.Session(impersonate="chrome")
+        # direct is free, so try it first; flips to the proxy for the rest of
+        # the scrape the first time Cloudflare blocks us
+        self._use_proxy = False
 
     def _get_page(self, url: str) -> BeautifulSoup | None:
-        if self._scraperapi_key:
+        resp = None
+        if not self._use_proxy:
+            try:
+                resp = self._session.get(url, timeout=15)
+            except cffi_requests.RequestsError as e:
+                logger.warning("direct fetch failed for %s: %s", url, e)
+            if resp is None or resp.status_code in _BLOCKED:
+                if not self._scraperapi_key:
+                    raise BlockedError(f"Letterboxd returned {getattr(resp, 'status_code', 'no response')} for {url}")
+                logger.info("direct fetch blocked, switching to ScraperAPI")
+                self._use_proxy = True
+                resp = None
+        if resp is None:
             resp = self._get_via_proxy(url)
-        else:
-            resp = self._session.get(url, timeout=15)
 
         if resp.status_code == 404:
             return None
@@ -59,7 +84,11 @@ class LetterboxdScraper:
     def _get_via_proxy(self, url: str, attempts: int = 3):
         """Fetch through ScraperAPI. Their service retries upstream internally,
         so a single request can take a minute — their docs recommend a 70s
-        timeout. Retry a couple of times before giving up."""
+        timeout. Retry a couple of times before giving up.
+
+        ScraperAPI's own status codes: 500 = couldn't fetch after retrying
+        (not billed, worth retrying), 429 = concurrency limit, 401/403 = key
+        invalid or credits used up."""
         proxy_url = (
             "http://api.scraperapi.com/"
             f"?api_key={self._scraperapi_key}"
@@ -68,11 +97,17 @@ class LetterboxdScraper:
         last_err = None
         for attempt in range(attempts):
             try:
-                return stdlib_requests.get(proxy_url, timeout=70)
+                resp = stdlib_requests.get(proxy_url, timeout=70)
             except (stdlib_requests.Timeout, stdlib_requests.ConnectionError) as e:
                 last_err = e
-                logger.warning("ScraperAPI attempt %d/%d failed for %s: %s",
-                               attempt + 1, attempts, url, e)
+            else:
+                if resp.status_code in (401, 403):
+                    raise ProxyQuotaError(f"ScraperAPI returned {resp.status_code}: {resp.text[:200]}")
+                if resp.status_code not in (429, 500):
+                    return resp
+                last_err = f"ScraperAPI returned {resp.status_code}"
+            logger.warning("ScraperAPI attempt %d/%d failed for %s: %s",
+                           attempt + 1, attempts, url, last_err)
         raise ScrapeError(
             f"Letterboxd is responding slowly right now — please try again in a minute. ({last_err})"
         )

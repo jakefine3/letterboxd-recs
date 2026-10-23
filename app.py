@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from src.ingestion.scraper import LetterboxdScraper, ScrapeError
+from src.ingestion.scraper import BlockedError, LetterboxdScraper, ProxyQuotaError, ScrapeError
 from src.ingestion.tmdb_client import TMDBClient
 from src.models.content_based import ContentBasedModel
 from src.models import taste
@@ -405,11 +405,16 @@ try:
     with st.spinner(f"Scraping {username}'s ratings from Letterboxd..."):
         ratings_df, watchlist_df = scrape_profile(username.strip().lower(), _scraperapi_key())
 except ScrapeError as e:
-    if "403" in str(e):
-        st.error(
-            "Letterboxd is blocking requests from our servers — this is a Cloudflare "
-            "restriction on cloud-hosted apps, not an issue with your account."
-        )
+    if isinstance(e, (BlockedError, ProxyQuotaError)):
+        if isinstance(e, ProxyQuotaError):
+            # our scraping proxy is out of credits — log the detail, keep the message plain
+            print(f"ScraperAPI refused request: {e}")
+            st.error("Live Letterboxd lookups are unavailable right now (our scraping quota is used up).")
+        else:
+            st.error(
+                "Letterboxd is blocking requests from our servers — this is a Cloudflare "
+                "restriction on cloud-hosted apps, not an issue with your account."
+            )
         st.info(
             "**Upload your ratings.csv as a workaround:**\n\n"
             "1. Go to **letterboxd.com → Profile → Settings → Import & Export**\n"
