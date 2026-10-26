@@ -278,13 +278,13 @@ def lookups_paused(scraperapi_key: str | None) -> bool:
         return False
 
 
-def paused_notice(offer_upload: bool = False):
+def paused_notice():
     st.warning(
         "**Live lookups are paused for now.** Letterboxd Insights is a free side project, and "
         "reading Letterboxd profiles runs through a paid scraping service on its free plan. "
         "This period's credits are used up, so new username lookups are on hold.\n\n"
-        "**Click _Try a demo profile_ above** to see the site in action with the creator's profile"
-        + (", or upload your own Letterboxd ratings below." if offer_upload else ".")
+        "**Click _Try a demo profile_ above** to see the site in action with the creator's "
+        "profile, or upload your own Letterboxd ratings below."
     )
 
 
@@ -451,10 +451,7 @@ with tog2:
     )
 
 demo = st.session_state.get("demo", False)
-paused = lookups_paused(_scraperapi_key())
 if not username and not demo:
-    if paused:
-        paused_notice()
     render_trending_marquee()
     st.stop()
 
@@ -470,7 +467,7 @@ try:
         st.info("Showing the demo profile (**jakefine**). Enter your own username above to see yours.")
         demo_data = load_demo()
         ratings_df, watchlist_df = demo_data["ratings"], demo_data["watchlist"]
-    elif paused:
+    elif lookups_paused(_scraperapi_key()):
         # don't spend a scrape we know will fail
         raise ProxyQuotaError("ScraperAPI credits used up")
     else:
@@ -481,7 +478,7 @@ except ScrapeError as e:
         if isinstance(e, ProxyQuotaError):
             # our scraping proxy is out of credits — log the detail, keep the message plain
             print(f"ScraperAPI refused request: {e}")
-            paused_notice(offer_upload=True)
+            paused_notice()
         else:
             st.error(
                 "Letterboxd is blocking requests from our servers — this is a Cloudflare "
