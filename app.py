@@ -276,9 +276,14 @@ def scrape_profile(username: str, zenrows_key: str | None = None) -> tuple[pd.Da
 
 
 @st.cache_data(show_spinner=False)
-def load_demo() -> tuple[pd.DataFrame, pd.DataFrame]:
-    # snapshot of the creator's profile, so visitors can try the site without a scrape
-    return pd.read_csv(_DEMO_DIR / "jakefine_ratings.csv"), pd.read_csv(_DEMO_DIR / "jakefine_watchlist.csv")
+def load_demo() -> dict[str, pd.DataFrame]:
+    # snapshot of the creator's profile, pre-enriched with TMDB metadata and a
+    # candidate pool (scripts/build_demo.py), so the demo makes no scrape or
+    # API calls and only has to train the model
+    demo = {name: pd.read_csv(_DEMO_DIR / f"jakefine_{name}.csv") for name in ("ratings", "watchlist")}
+    for name in ("enriched", "wl_enriched", "candidates"):
+        demo[name] = pd.read_pickle(_DEMO_DIR / f"jakefine_{name}.pkl")
+    return demo
 
 
 def _start_demo():
@@ -429,7 +434,8 @@ watchlist_df = None
 try:
     if demo:
         st.info("Showing the demo profile (**jakefine**). Enter your own username above to see yours.")
-        ratings_df, watchlist_df = load_demo()
+        demo_data = load_demo()
+        ratings_df, watchlist_df = demo_data["ratings"], demo_data["watchlist"]
     else:
         with st.spinner(f"Scraping {username}'s ratings from Letterboxd..."):
             ratings_df, watchlist_df = scrape_profile(username.strip().lower(), _zenrows_key())
@@ -477,9 +483,12 @@ if n_rated < 30:
 
 _enrich_time = "~30s" if n_rated > 500 else "~10s"
 _enrich_msg = f"Enriching {n_rated} films with TMDB metadata"
-with st.spinner(_enrich_msg):
-    enriched = enrich(ratings_df)
-    wl_enriched = enrich(watchlist_df) if len(watchlist_df) else watchlist_df
+if demo:
+    enriched, wl_enriched = demo_data["enriched"], demo_data["wl_enriched"]
+else:
+    with st.spinner(_enrich_msg):
+        enriched = enrich(ratings_df)
+        wl_enriched = enrich(watchlist_df) if len(watchlist_df) else watchlist_df
 
 with st.spinner("Training your taste model..."):
     model = ContentBasedModel()
@@ -503,8 +512,11 @@ with tab_recs:
     seen = frozenset(enriched["tmdb_id"].dropna().astype(int))
     favorites = tuple(enriched[enriched["rating"] >= 4.5]["tmdb_id"].dropna().astype(int).tolist())
 
-    with st.spinner("Scouting films you haven't seen..."):
-        candidates = fetch_candidates(seen, favorites, tuple(genres))
+    if demo:
+        candidates = demo_data["candidates"]
+    else:
+        with st.spinner("Scouting films you haven't seen..."):
+            candidates = fetch_candidates(seen, favorites, tuple(genres))
 
     if hide_mainstream:
         candidates = candidates[candidates["vote_count"] < 5000]

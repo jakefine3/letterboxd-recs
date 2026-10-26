@@ -93,7 +93,7 @@ class LetterboxdScraper:
             raise ScrapeError(f"Letterboxd returned {resp.status_code} for {url}")
         return BeautifulSoup(resp.text, "lxml")
 
-    def _get_via_proxy(self, url: str, attempts: int = 5):
+    def _get_via_proxy(self, url: str, attempts: int = 10):
         if not self._premium:
             # one try only: if ZenRows can't get through on standard proxies
             # (422) or Cloudflare blocks them, residential is the fix, not a retry
@@ -117,7 +117,9 @@ class LetterboxdScraper:
         used up, 429 = over the concurrency limit, 422/5xx = couldn't get the
         page this time (not billed, worth retrying). With original_status, a
         RESP001 body means ZenRows' exit IP got challenged — also unbilled, and
-        residential IPs rotate, so a retry usually lands (~half fail)."""
+        residential IPs rotate, so a retry usually lands. US exits get through
+        ~60% of the time and fail fast (~3s), so 10 tries all but guarantee
+        the page."""
         params = {
             "apikey": self._zenrows_key,
             "url": url,
@@ -125,6 +127,7 @@ class LetterboxdScraper:
         }
         if premium:
             params["premium_proxy"] = "true"
+            params["proxy_country"] = "us"
         last_err = None
         for attempt in range(attempts):
             try:
@@ -140,9 +143,8 @@ class LetterboxdScraper:
                 last_err = f"ZenRows returned {resp.status_code}: {resp.text[:200]}"
             logger.warning("ZenRows attempt %d/%d failed for %s: %s",
                            attempt + 1, attempts, url, last_err)
-        raise ScrapeError(
-            f"Letterboxd is responding slowly right now — please try again in a minute. ({last_err})"
-        )
+        logger.error("ZenRows gave up on %s: %s", url, last_err)
+        raise ScrapeError("Couldn't reach Letterboxd right now — please try again in a minute.")
 
     @staticmethod
     def _page_count(soup: BeautifulSoup) -> int:
