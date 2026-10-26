@@ -8,6 +8,7 @@ in the backend (src/ingestion/csv_loader.py) for offline experimentation.
 import html
 import os
 import random
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -22,6 +23,7 @@ load_dotenv()
 
 _POSTER_BASE = "https://image.tmdb.org/t/p/w342"
 _MARQUEE_POSTER_BASE = "https://image.tmdb.org/t/p/w185"
+_DEMO_DIR = Path(__file__).parent / "data" / "demo"
 _EMPTY_POSTER = "https://s.ltrbxd.com/static/img/empty-poster-70-BSf-Pjrh.png"
 
 _QUOTES = [
@@ -245,12 +247,12 @@ def _tmdb_api_key() -> str | None:
         return None
 
 
-def _scraperapi_key() -> str | None:
-    key = os.getenv("SCRAPERAPI_KEY")
+def _zenrows_key() -> str | None:
+    key = os.getenv("ZENROWS_API_KEY")
     if key:
         return key
     try:
-        return st.secrets["SCRAPERAPI_KEY"]
+        return st.secrets["ZENROWS_API_KEY"]
     except (KeyError, FileNotFoundError):
         return None
 
@@ -268,9 +270,24 @@ def get_client() -> TMDBClient:
 
 
 @st.cache_data(show_spinner=False)
-def scrape_profile(username: str, scraperapi_key: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    scraper = LetterboxdScraper(scraperapi_key=scraperapi_key)
+def scrape_profile(username: str, zenrows_key: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    scraper = LetterboxdScraper(zenrows_key=zenrows_key)
     return scraper.fetch_ratings(username), scraper.fetch_watchlist(username)
+
+
+@st.cache_data(show_spinner=False)
+def load_demo() -> tuple[pd.DataFrame, pd.DataFrame]:
+    # snapshot of the creator's profile, so visitors can try the site without a scrape
+    return pd.read_csv(_DEMO_DIR / "jakefine_ratings.csv"), pd.read_csv(_DEMO_DIR / "jakefine_watchlist.csv")
+
+
+def _start_demo():
+    st.session_state.demo = True
+    st.session_state.username = ""
+
+
+def _end_demo():
+    st.session_state.demo = False
 
 
 @st.cache_data(show_spinner=False)
@@ -374,6 +391,13 @@ with col_input:
         "Letterboxd username",
         placeholder="e.g. martinscorsese",
         help="Your profile must be public.",
+        key="username",
+        on_change=_end_demo,
+    )
+    st.button(
+        "Just browsing? Try a demo profile",
+        on_click=_start_demo,
+        help="See the site in action with the creator's profile — no lookup needed.",
     )
 with col_slider:
     n_recs = st.slider("How many picks?", 5, 50, 20, step=5)
@@ -390,7 +414,8 @@ with tog2:
         help="Hides films already on your Letterboxd watchlist so you discover something new.",
     )
 
-if not username:
+demo = st.session_state.get("demo", False)
+if not username and not demo:
     render_trending_marquee()
     st.stop()
 
@@ -402,14 +427,21 @@ ratings_df = None
 watchlist_df = None
 
 try:
-    with st.spinner(f"Scraping {username}'s ratings from Letterboxd..."):
-        ratings_df, watchlist_df = scrape_profile(username.strip().lower(), _scraperapi_key())
+    if demo:
+        st.info("Showing the demo profile (**jakefine**). Enter your own username above to see yours.")
+        ratings_df, watchlist_df = load_demo()
+    else:
+        with st.spinner(f"Scraping {username}'s ratings from Letterboxd..."):
+            ratings_df, watchlist_df = scrape_profile(username.strip().lower(), _zenrows_key())
 except ScrapeError as e:
     if isinstance(e, (BlockedError, ProxyQuotaError)):
         if isinstance(e, ProxyQuotaError):
             # our scraping proxy is out of credits — log the detail, keep the message plain
-            print(f"ScraperAPI refused request: {e}")
-            st.error("Live Letterboxd lookups are unavailable right now (our scraping quota is used up).")
+            print(f"ZenRows refused request: {e}")
+            st.error(
+                "Live Letterboxd lookups are paused until next month (our free scraping quota "
+                "is used up). Try the demo profile, or upload your ratings below."
+            )
         else:
             st.error(
                 "Letterboxd is blocking requests from our servers — this is a Cloudflare "
