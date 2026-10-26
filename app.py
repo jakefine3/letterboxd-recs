@@ -11,6 +11,7 @@ import random
 from pathlib import Path
 
 import pandas as pd
+import requests
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -247,14 +248,44 @@ def _tmdb_api_key() -> str | None:
         return None
 
 
-def _zenrows_key() -> str | None:
-    key = os.getenv("ZENROWS_API_KEY")
+def _scraperapi_key() -> str | None:
+    key = os.getenv("SCRAPERAPI_KEY")
     if key:
         return key
     try:
-        return st.secrets["ZENROWS_API_KEY"]
+        return st.secrets["SCRAPERAPI_KEY"]
     except (KeyError, FileNotFoundError):
         return None
+
+
+# a typical profile is ~10 pages at ~11 credits each through Cloudflare, so
+# below this a lookup would likely run dry partway through
+_MIN_LOOKUP_CREDITS = 150
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def lookups_paused(scraperapi_key: str | None) -> bool:
+    """True when ScraperAPI is out of credits. The account endpoint is free;
+    if it can't be reached, assume lookups work and let the scrape decide."""
+    if not scraperapi_key:
+        return False
+    try:
+        acct = requests.get(
+            "https://api.scraperapi.com/account", params={"api_key": scraperapi_key}, timeout=10
+        ).json()
+        return acct["requestLimit"] - acct["requestCount"] < _MIN_LOOKUP_CREDITS
+    except (requests.RequestException, KeyError, ValueError):
+        return False
+
+
+def paused_notice(offer_upload: bool = False):
+    st.warning(
+        "**Live lookups are paused for now.** Letterboxd Insights is a free side project, and "
+        "reading Letterboxd profiles runs through a paid scraping service on its free plan. "
+        "This period's credits are used up, so new username lookups are on hold.\n\n"
+        "**Click _Try a demo profile_ above** to see the site in action with the creator's profile"
+        + (", or upload your own Letterboxd ratings below." if offer_upload else ".")
+    )
 
 
 @st.cache_resource
@@ -270,8 +301,8 @@ def get_client() -> TMDBClient:
 
 
 @st.cache_data(show_spinner=False)
-def scrape_profile(username: str, zenrows_key: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    scraper = LetterboxdScraper(zenrows_key=zenrows_key)
+def scrape_profile(username: str, scraperapi_key: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    scraper = LetterboxdScraper(scraperapi_key=scraperapi_key)
     return scraper.fetch_ratings(username), scraper.fetch_watchlist(username)
 
 
@@ -420,7 +451,10 @@ with tog2:
     )
 
 demo = st.session_state.get("demo", False)
+paused = lookups_paused(_scraperapi_key())
 if not username and not demo:
+    if paused:
+        paused_notice()
     render_trending_marquee()
     st.stop()
 
@@ -436,18 +470,18 @@ try:
         st.info("Showing the demo profile (**jakefine**). Enter your own username above to see yours.")
         demo_data = load_demo()
         ratings_df, watchlist_df = demo_data["ratings"], demo_data["watchlist"]
+    elif paused:
+        # don't spend a scrape we know will fail
+        raise ProxyQuotaError("ScraperAPI credits used up")
     else:
         with st.spinner(f"Scraping {username}'s ratings from Letterboxd..."):
-            ratings_df, watchlist_df = scrape_profile(username.strip().lower(), _zenrows_key())
+            ratings_df, watchlist_df = scrape_profile(username.strip().lower(), _scraperapi_key())
 except ScrapeError as e:
     if isinstance(e, (BlockedError, ProxyQuotaError)):
         if isinstance(e, ProxyQuotaError):
             # our scraping proxy is out of credits — log the detail, keep the message plain
-            print(f"ZenRows refused request: {e}")
-            st.error(
-                "Live Letterboxd lookups are paused until next month (our free scraping quota "
-                "is used up). Try the demo profile, or upload your ratings below."
-            )
+            print(f"ScraperAPI refused request: {e}")
+            paused_notice(offer_upload=True)
         else:
             st.error(
                 "Letterboxd is blocking requests from our servers — this is a Cloudflare "

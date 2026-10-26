@@ -2,15 +2,12 @@
 
 Letterboxd has no public API, but ratings and watchlists are visible on
 profile pages. Plain requests get blocked by Cloudflare's TLS fingerprinting,
-so we use curl_cffi's browser impersonation instead. Cloudflare also blocks
-datacenter IPs outright (Streamlit Cloud, GitHub runners), so when a direct
-request is refused we retry through ZenRows' residential proxies.
+so we use curl_cffi's browser impersonation instead.
 
 Page structure (as of mid-2026):
     li.griditem
         [data-item-name] = "Film Title (2019)"
         span.rating.rated-N  where N = stars * 2  (rated-9 = 4.5 stars)
-    .paginate-pages li     last one holds the page count
 
 Usage:
     scraper = LetterboxdScraper()
@@ -19,7 +16,8 @@ Usage:
 """
 import re
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests as stdlib_requests
 import pandas as pd
@@ -29,13 +27,7 @@ from curl_cffi import requests as cffi_requests
 logger = logging.getLogger(__name__)
 
 _BASE = "https://letterboxd.com"
-_ZENROWS = "https://api.zenrows.com/v1/"
-# ratings stay effectively uncapped: anything we skip isn't marked as seen and
-# can come back as a recommendation. The watchlist only drives badges, so it
-# gets a tight cap (28 films a page, so it's the pricier list to fetch).
-_MAX_RATING_PAGES = 100
-_MAX_WATCHLIST_PAGES = 5
-_WORKERS = 5  # ZenRows free plan allows 5 concurrent requests
+_MAX_PAGES = 100  # safety cap: 100 pages * 72 films = 7200 films
 
 # "Film Title (2019)" -> ("Film Title", 2019)
 _NAME_YEAR_RE = re.compile(r"^(.*?)\s*\((\d{4})\)$")
@@ -52,7 +44,7 @@ class BlockedError(ScrapeError):
 
 
 class ProxyQuotaError(ScrapeError):
-    """ZenRows refused the request: monthly credits used up or key invalid."""
+    """ScraperAPI refused the request: credits used up or key invalid."""
 
 
 # statuses Cloudflare uses when it blocks a datacenter IP
@@ -60,14 +52,12 @@ _BLOCKED = {403, 429, 503}
 
 
 class LetterboxdScraper:
-    def __init__(self, zenrows_key: str | None = None):
-        self._zenrows_key = zenrows_key
+    def __init__(self, scraperapi_key: str | None = None):
+        self._scraperapi_key = scraperapi_key
         self._session = cffi_requests.Session(impersonate="chrome")
-        # cheapest route first: direct (free), then ZenRows' standard proxies
-        # (1 credit), then residential (10). Each flag flips once per scrape
-        # the first time a route gets blocked.
+        # direct is free, so try it first; flips to the proxy for the rest of
+        # the scrape the first time Cloudflare blocks us
         self._use_proxy = False
-        self._premium = False
 
     def _get_page(self, url: str) -> BeautifulSoup | None:
         resp = None
@@ -77,9 +67,9 @@ class LetterboxdScraper:
             except cffi_requests.RequestsError as e:
                 logger.warning("direct fetch failed for %s: %s", url, e)
             if resp is None or resp.status_code in _BLOCKED:
-                if not self._zenrows_key:
+                if not self._scraperapi_key:
                     raise BlockedError(f"Letterboxd returned {getattr(resp, 'status_code', 'no response')} for {url}")
-                logger.info("direct fetch blocked, switching to ZenRows")
+                logger.info("direct fetch blocked, switching to ScraperAPI")
                 self._use_proxy = True
                 resp = None
         if resp is None:
@@ -87,70 +77,40 @@ class LetterboxdScraper:
 
         if resp.status_code == 404:
             return None
-        if resp.status_code in _BLOCKED:
-            raise BlockedError(f"Letterboxd returned {resp.status_code} for {url}")
         if resp.status_code != 200:
             raise ScrapeError(f"Letterboxd returned {resp.status_code} for {url}")
         return BeautifulSoup(resp.text, "lxml")
 
-    def _get_via_proxy(self, url: str, attempts: int = 10):
-        if not self._premium:
-            # one try only: if ZenRows can't get through on standard proxies
-            # (422) or Cloudflare blocks them, residential is the fix, not a retry
-            try:
-                resp = self._zenrows(url, premium=False, attempts=1)
-                if resp.status_code not in _BLOCKED:
-                    return resp
-            except ProxyQuotaError:
-                raise
-            except ScrapeError:
-                pass
-            logger.info("standard proxy blocked, switching to residential")
-            self._premium = True
-        return self._zenrows(url, premium=True, attempts=attempts)
+    def _get_via_proxy(self, url: str, attempts: int = 3):
+        """Fetch through ScraperAPI. Their service retries upstream internally,
+        so a single request can take a minute — their docs recommend a 70s
+        timeout. Retry a couple of times before giving up.
 
-    def _zenrows(self, url: str, premium: bool, attempts: int):
-        """Fetch through ZenRows: standard proxies cost 1 credit, residential 10.
-
-        original_status passes Letterboxd's own status through, so a 404 still
-        means "no such user". ZenRows' own errors: 401 = bad key, 402 = credits
-        used up, 429 = over the concurrency limit, 422/5xx = couldn't get the
-        page this time (not billed, worth retrying). With original_status, a
-        RESP001 body means ZenRows' exit IP got challenged — also unbilled, and
-        residential IPs rotate, so a retry usually lands. US exits get through
-        ~60% of the time and fail fast (~3s), so 10 tries all but guarantee
-        the page."""
-        params = {
-            "apikey": self._zenrows_key,
-            "url": url,
-            "original_status": "true",
-        }
-        if premium:
-            params["premium_proxy"] = "true"
-            params["proxy_country"] = "us"
+        ScraperAPI's own status codes: 500 = couldn't fetch after retrying
+        (not billed, worth retrying), 429 = concurrency limit, 401/403 = key
+        invalid or credits used up."""
+        proxy_url = (
+            "http://api.scraperapi.com/"
+            f"?api_key={self._scraperapi_key}"
+            f"&url={urllib.parse.quote(url, safe='')}"
+        )
         last_err = None
         for attempt in range(attempts):
             try:
-                resp = stdlib_requests.get(_ZENROWS, params=params, timeout=70)
+                resp = stdlib_requests.get(proxy_url, timeout=70)
             except (stdlib_requests.Timeout, stdlib_requests.ConnectionError) as e:
                 last_err = e
             else:
-                if resp.status_code in (401, 402):
-                    raise ProxyQuotaError(f"ZenRows returned {resp.status_code}: {resp.text[:200]}")
-                if (resp.status_code not in (422, 429) and resp.status_code < 500
-                        and "RESP001" not in resp.text[:200]):
+                if resp.status_code in (401, 403):
+                    raise ProxyQuotaError(f"ScraperAPI returned {resp.status_code}: {resp.text[:200]}")
+                if resp.status_code not in (429, 500):
                     return resp
-                last_err = f"ZenRows returned {resp.status_code}: {resp.text[:200]}"
-            logger.warning("ZenRows attempt %d/%d failed for %s: %s",
+                last_err = f"ScraperAPI returned {resp.status_code}"
+            logger.warning("ScraperAPI attempt %d/%d failed for %s: %s",
                            attempt + 1, attempts, url, last_err)
-        logger.error("ZenRows gave up on %s: %s", url, last_err)
-        raise ScrapeError("Couldn't reach Letterboxd right now — please try again in a minute.")
-
-    @staticmethod
-    def _page_count(soup: BeautifulSoup) -> int:
-        nums = [int(t) for li in soup.select(".paginate-pages li")
-                if (t := li.get_text(strip=True)).isdigit()]
-        return max(nums, default=1)
+        raise ScrapeError(
+            f"Letterboxd is responding slowly right now — please try again in a minute. ({last_err})"
+        )
 
     @staticmethod
     def _parse_items(soup: BeautifulSoup, with_rating: bool) -> list[dict]:
@@ -176,22 +136,41 @@ class LetterboxdScraper:
             rows.append(row)
         return rows
 
-    def _scrape_paginated(self, base_url: str, with_rating: bool, max_pages: int) -> pd.DataFrame:
-        # Page 1 first — validates the profile exists and tells us how many
-        # pages there are, so we never pay for pages past the end.
+    def _scrape_paginated(self, base_url: str, with_rating: bool) -> pd.DataFrame:
+        # Page 1 first — validates the profile exists before firing parallel work.
         first = self._get_page(base_url)
         if first is None:
             raise ScrapeError(f"Profile not found: {base_url}")
-        all_rows: list[dict] = self._parse_items(first, with_rating)
-        if not all_rows:
+        first_rows = self._parse_items(first, with_rating)
+        if not first_rows:
             return pd.DataFrame()
 
-        n_pages = min(self._page_count(first), max_pages)
-        urls = [f"{base_url}page/{p}/" for p in range(2, n_pages + 1)]
-        with ThreadPoolExecutor(max_workers=_WORKERS) as ex:
-            for soup in ex.map(self._get_page, urls):
-                if soup is not None:
-                    all_rows.extend(self._parse_items(soup, with_rating))
+        all_rows: list[dict] = list(first_rows)
+
+        # Fetch remaining pages in parallel batches. Stop as soon as a batch
+        # contains an empty page (signals end of the list).
+        _BATCH = 5
+        for batch_start in range(2, _MAX_PAGES + 1, _BATCH):
+            pages = range(batch_start, min(batch_start + _BATCH, _MAX_PAGES + 1))
+            with ThreadPoolExecutor(max_workers=_BATCH) as ex:
+                futures = {
+                    ex.submit(self._get_page, f"{base_url}page/{p}/"): p
+                    for p in pages
+                }
+                batch: dict[int, list[dict]] = {}
+                for fut in as_completed(futures):
+                    p = futures[fut]
+                    soup = fut.result()
+                    batch[p] = self._parse_items(soup, with_rating) if soup else []
+
+            done = False
+            for p in sorted(batch):
+                if not batch[p]:
+                    done = True
+                    break
+                all_rows.extend(batch[p])
+            if done:
+                break
 
         df = pd.DataFrame(all_rows)
         if df.empty:
@@ -203,14 +182,12 @@ class LetterboxdScraper:
     # ------------------------------------------------------------------
 
     def fetch_ratings(self, username: str) -> pd.DataFrame:
-        """A user's rated films, newest first (capped at the 720 most recent).
-        Columns: name, year, rating.
+        """All rated films for a user. Columns: name, year, rating.
 
         Matches the schema of csv_loader.load_ratings so the two input
         paths are interchangeable downstream.
         """
-        df = self._scrape_paginated(f"{_BASE}/{username}/films/ratings/", with_rating=True,
-                                     max_pages=_MAX_RATING_PAGES)
+        df = self._scrape_paginated(f"{_BASE}/{username}/films/ratings/", with_rating=True)
         if df.empty:
             raise ScrapeError(f"No rated films found for user '{username}'")
         logger.info("Scraped %d rated films for %s", len(df), username)
@@ -219,8 +196,7 @@ class LetterboxdScraper:
     def fetch_watchlist(self, username: str) -> pd.DataFrame:
         """A user's watchlist. Columns: name, year. Empty DataFrame if none."""
         try:
-            df = self._scrape_paginated(f"{_BASE}/{username}/watchlist/", with_rating=False,
-                                         max_pages=_MAX_WATCHLIST_PAGES)
+            df = self._scrape_paginated(f"{_BASE}/{username}/watchlist/", with_rating=False)
         except ScrapeError:
             return pd.DataFrame(columns=["name", "year"])
         logger.info("Scraped %d watchlist films for %s", len(df), username)
