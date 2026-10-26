@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -12,6 +13,8 @@ _BASE_URL = "https://api.themoviedb.org/3"
 _DEFAULT_CACHE = Path("data/processed/tmdb_cache.json")
 _TOP_CAST = 5
 _MAX_WORKERS = 20  # safe against TMDB's 40 req/sec limit
+# request errors echo the full URL, key included — strip it before logging
+_KEY_RE = re.compile(r"(api_key=)[^&\s'\"]+")
 
 
 class TMDBClient:
@@ -62,7 +65,7 @@ class TMDBClient:
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as e:
-            logger.warning("TMDB request failed (%s %s): %s", endpoint, params, e)
+            logger.warning("TMDB request failed (%s %s): %s", endpoint, params, _KEY_RE.sub(r"\1***", str(e)))
             return None
 
     def _search_id(self, name: str, year: int) -> int | None:

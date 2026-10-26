@@ -11,3 +11,8 @@ gatherUsageStats = false
 
 [server]
 headless = true
+
+[client]
+# visitors see a generic error, never exception messages or tracebacks
+# (request errors can echo URLs with API keys in them); details go to the logs
+showErrorDetails = "type"

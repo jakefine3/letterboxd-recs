@@ -33,6 +33,12 @@ _MAX_PAGES = 100  # safety cap: 100 pages * 72 films = 7200 films
 _NAME_YEAR_RE = re.compile(r"^(.*?)\s*\((\d{4})\)$")
 # rating classes look like "rated-9" (stars * 2)
 _RATED_RE = re.compile(r"rated-(\d+)")
+# request errors echo the full proxy URL, key included — strip it before logging
+_KEY_RE = re.compile(r"(api_key=)[^&\s'\"]+")
+
+
+def _redact(err) -> str:
+    return _KEY_RE.sub(r"\1***", str(err))
 
 
 class ScrapeError(Exception):
@@ -98,8 +104,8 @@ class LetterboxdScraper:
         for attempt in range(attempts):
             try:
                 resp = stdlib_requests.get(proxy_url, timeout=70)
-            except (stdlib_requests.Timeout, stdlib_requests.ConnectionError) as e:
-                last_err = e
+            except stdlib_requests.RequestException as e:
+                last_err = _redact(e)
             else:
                 if resp.status_code in (401, 403):
                     raise ProxyQuotaError(f"ScraperAPI returned {resp.status_code}: {resp.text[:200]}")
@@ -108,9 +114,8 @@ class LetterboxdScraper:
                 last_err = f"ScraperAPI returned {resp.status_code}"
             logger.warning("ScraperAPI attempt %d/%d failed for %s: %s",
                            attempt + 1, attempts, url, last_err)
-        raise ScrapeError(
-            f"Letterboxd is responding slowly right now — please try again in a minute. ({last_err})"
-        )
+        logger.error("ScraperAPI gave up on %s: %s", url, last_err)
+        raise ScrapeError("Letterboxd is responding slowly right now — please try again in a minute.")
 
     @staticmethod
     def _parse_items(soup: BeautifulSoup, with_rating: bool) -> list[dict]:
